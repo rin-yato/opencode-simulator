@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { matchDevice, type Device } from "./devices"
+import { formatSize, matchDevice, type Device } from "./devices"
 
 const device = (name: string, udid: string): Device => ({
   udid,
@@ -36,5 +36,14 @@ describe("matchDevice", () => {
 
   test("reports a missing device", () => {
     expect(() => matchDevice(devices, "Pixel")).toThrow(/No simulator matches/)
+  })
+})
+
+describe("formatSize", () => {
+  test("formats kilobytes, megabytes, and gigabytes", () => {
+    expect(formatSize(undefined)).toBe("-")
+    expect(formatSize(512)).toBe("512 KB")
+    expect(formatSize(2_048)).toBe("2.0 MB")
+    expect(formatSize(2 * 1_024 * 1_024)).toBe("2.00 GB")
   })
 })

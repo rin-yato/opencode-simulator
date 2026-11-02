@@ -48,6 +48,8 @@ export interface HubManager {
 interface Slot {
   /** Undefined for the default hub, which follows whichever device booted first. */
   readonly device: string | undefined
+  /** Cancels a start that is still waiting for the device to boot. */
+  readonly abort: AbortController
   child: ChildProcess | null
   port: number | null
   url: string | null
@@ -62,6 +64,7 @@ interface Slot {
 
 const emptySlot = (device: string | undefined): Slot => ({
   device,
+  abort: new AbortController(),
   child: null,
   port: null,
   url: null,
@@ -212,8 +215,13 @@ export function createHubManager(ctx: MainContext): HubManager {
     })
 
     const url = `http://127.0.0.1:${port}`
+    const exited = new Promise<never>((_, reject) => {
+      child.once("exit", (code, signal) => {
+        reject(new Error(`serve-sim exited before ready (${code ?? signal ?? "unknown"})`))
+      })
+    })
     try {
-      await waitForReady(url, ctx.signal)
+      await Promise.race([waitForReady(url, slot.abort.signal), exited])
     } catch (cause) {
       await stopSlotChild(slot, child)
       throw cause
@@ -255,6 +263,7 @@ export function createHubManager(ctx: MainContext): HubManager {
     if (!slot) return
     slots.delete(key)
     slot.released = true
+    slot.abort.abort()
     if (slot.restartTimer) {
       clearTimeout(slot.restartTimer)
       slot.restartTimer = null
@@ -270,6 +279,7 @@ export function createHubManager(ctx: MainContext): HubManager {
     stopped = true
     const children: ChildProcess[] = []
     for (const slot of slots.values()) {
+      slot.abort.abort()
       if (slot.restartTimer) {
         clearTimeout(slot.restartTimer)
         slot.restartTimer = null

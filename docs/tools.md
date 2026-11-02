@@ -10,6 +10,9 @@ All tools are in the `sim` namespace. In Code Mode call them as
 - Omitting `udid` targets the device the session started (`sim_start` or
   `sim_boot`), then the only booted simulator. `sim_start` also claims the
   device: if another session already owns it, a copy is created instead.
+- Automatic copies are leased. Shut-down copies idle for 14 days are removed on
+  the next plugin start or by `sim_prune`. Templates, booted devices, and
+  devices you created yourself are never auto-deleted.
 - Failures return `ERROR: <message>` in the content and `metadata.ok: false`.
   They do not throw across the tool boundary.
 - Every result includes `metadata.udid` when a device was resolved.
@@ -23,8 +26,13 @@ List simulators. Booted devices come first.
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
 | `all` | boolean | `false` | Include unavailable devices |
+| `disk` | boolean | `false` | Add size and `copy`/`template` tags |
 
-Returns a tab-separated table: name, state, runtime, UDID.
+Returns a tab-separated table: name, state, runtime, UDID. With `disk: true`,
+the row gains `size` and `tag` columns. `tag` is `copy` for a plugin-managed
+copy, `template` for a warm template, and `-` otherwise. Sizes are approximate
+and only computed on request. A clone's size is logical: APFS shares blocks with
+its template, so the actual disk increase is smaller until the copy writes.
 
 ### `sim_boot`
 
@@ -54,6 +62,9 @@ default.
 The source keeps running. If the source app has no installed bundle for that id,
 the device is still created and the install error is reported.
 
+This is an explicit device: it is not added to the automatic copy leases and is
+not auto-pruned.
+
 ### `sim_delete`
 
 Shut down and delete a simulator. **Destructive:** the device and all its data
@@ -64,8 +75,26 @@ are removed.
 | `udid` | string | required | Device to delete |
 | `force` | boolean | `false` | Delete even if another session owns it |
 
-Also clears `session-devices` entries for that UDID. Use it for `sim_create`
-copies; do not delete a user's main simulator unless they ask.
+Also clears `session-devices`, copy leases, and template records for that UDID.
+Use it for `sim_create` copies; do not delete a user's main simulator unless
+they ask. Deleting a `template` device is safe: the next copy prepares a new
+one.
+
+### `sim_prune`
+
+Delete old automatic copies. Dry run by default.
+
+| Argument | Type | Default | Meaning |
+|---|---|---|---|
+| `olderThanDays` | integer 1..365 | copy TTL (14) | Minimum idle time |
+| `dryRun` | boolean | `true` | List without deleting |
+
+Only plugin-created copies are eligible. A copy must be shut down; booted
+devices and templates are skipped. The same sweep runs on plugin start for
+copies older than the configured TTL. Set the TTL with
+`OPENCODE_SIMULATOR_COPY_TTL_DAYS` or the `copyTtlDays` plugin option; `0`
+disables both automatic cleanup and the default here (the tool then uses 14
+when `olderThanDays` is omitted).
 
 ### `sim_start`
 
@@ -94,6 +123,17 @@ This keeps two sessions from sharing one screen and one set of taps by default.
 When several simulators are already booted, an unowned one is preferred; if
 every booted device belongs to another session, the first is used as the copy
 source. `label` only affects a copy, not a device the session already owns.
+
+Copies prefer a warm template: one shut-down `<model> — template` device per
+model/runtime that has already completed a boot. Cloning it is cheap on APFS and
+boots in seconds. If no template exists, the first copy takes the usual cold
+first boot and prepares a template in the background for later sessions. The
+result says `template=preparing` or `template=used`. Templates are internal;
+`sim_start({ udid: "<template>" })` is refused.
+
+The panel tab opens before the boot finishes, so a slow first boot shows the
+panel and its loader instead of leaving the session blank. The tool still
+returns after the device is booted and the app is launched.
 
 Passing a UDID that another session owns is treated as an explicit choice to
 share; the result then includes

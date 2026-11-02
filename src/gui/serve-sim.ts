@@ -6,7 +6,7 @@ import type { MainContext } from "@opencode/plugin/gui/main"
 declare const require: NodeRequire
 
 export const HUB_PACKAGE = "serve-sim"
-const READY_TIMEOUT_MS = 30_000
+const READY_TIMEOUT_MS = 420_000
 const READY_POLL_MS = 250
 
 export interface Cli {

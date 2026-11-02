@@ -14,7 +14,7 @@ export const MAX_SESSION_DEVICES = 500
 
 export interface StorageLike {
   get(key: string): Promise<unknown>
-  set(key: string, value: Record<string, string>): Promise<void>
+  set(key: string, value: unknown): Promise<void>
 }
 
 type Persist = (devices: Record<string, string>) => Promise<void>
