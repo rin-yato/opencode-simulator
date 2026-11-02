@@ -2,6 +2,7 @@ import { Command, MenuItem, Panel, Plugin, type PanelTab } from "@opencode/plugi
 import main from "./gui/main"
 import { SimulatorPanel } from "./gui/panel"
 import en from "./gui/i18n/en"
+import { requestDevice } from "./gui/requests"
 import { SIMULATOR_RPC } from "./rpc"
 
 const definition = Plugin.define({
@@ -32,7 +33,7 @@ export default Plugin.define({
         icon: "monitor",
       },
       list: (input) => (input.open.includes("device") ? [tab] : []),
-      render: () => <SimulatorPanel />,
+      render: (props) => <SimulatorPanel session={props.session} />,
     })
 
     ctx.add(
@@ -81,6 +82,10 @@ export default Plugin.define({
         void client().opened({ request, opened: false }).catch(() => {})
         return
       }
+      const udid = typeof event.data?.udid === "string" ? event.data.udid : ""
+      // Record the device before mounting the tab: the panel reads it on mount
+      // and asks the main process for a hub locked to that simulator.
+      if (udid) requestDevice(session.key, udid)
       ctx.layout.open(`${ctx.id}:device`, session, { background: true })
       const location = session.location
       void client()

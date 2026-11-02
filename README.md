@@ -64,13 +64,22 @@ plugin in every window and in the Electron main process.
   Xcode/Simulator.app or `sim_boot`.
 - Open the right side panel and choose **Simulator** from the `+` menu, or run
   **Open Simulator** from the command palette.
-- The panel shows the serve-sim preview for the booted device. It is
-  interactive: tap, drag, type, rotate, home, and the tools work as in
-  serve-sim.
+- The panel shows the serve-sim preview for the requested device. `sim_start`
+  opens the tab **in the session that called it** and **on the device it
+  booted**, even when other simulators are already booted. It is interactive:
+  tap, drag, type, rotate, home, and the tools work as in serve-sim.
 - Closing the panel disposes the native view; the simulator keeps running.
+  The serve-sim hub for that device stops 30s after its last panel closes.
 
-`serve-sim` targets booted simulators by default. If none are booted, boot one
-with Xcode/Simulator.app or `xcrun simctl boot <udid>`, then reopen the panel.
+Each session remembers the last device it opened, so reopening the tab after a
+reload restores that simulator. A manual open with no remembered device targets
+the first booted simulator; boot one first if none are running.
+
+Multiple sessions can each own a simulator. Call `sim_start` with a different
+device in each session; switching sessions switches the panel to that session's
+device, and two windows can stream two devices at the same time. Only the routed
+session's panel is mounted in a window, so a background session keeps working
+through the AXe-backed tools while its tab is closed.
 
 ## Agent tools
 
@@ -81,7 +90,7 @@ no MCP server and no extra config.
 |---|---|
 | `sim_devices` | List simulators, states, runtimes, and UDIDs |
 | `sim_boot` | Boot a device headlessly by UDID or name |
-| `sim_start` | Boot if needed, optionally launch an app, and open the Simulator panel |
+| `sim_start` | Boot if needed, optionally launch an app, and open the Simulator panel on that device |
 | `sim_status` | Device, app, screen size, AXe version, serve-sim port |
 | `sim_ui` | Compact action table; `find` for one control, `mode: "interactive"` for the next action |
 | `sim_tap` | Tap by `text`, `id`, `label`, `value`, or normalized `x`/`y` |
@@ -127,9 +136,12 @@ config (or run `bun run build` for GUI changes) to reload the plugin.
 ## How it works
 
 - `src/gui.tsx` registers the panel, menu item, and command.
-- `src/gui/main.ts` owns the `WebContentsView` and the hub process.
-- `src/gui/hub.ts` spawns `serve-sim`, waits for `/readyz`, and reconnects the
-  pane when the hub restarts on a new port.
+- `src/gui/main.ts` owns the `WebContentsView` and the hub manager.
+- `src/gui/hub.ts` runs one `serve-sim` per device (`--single-device`), waits
+  for `/readyz`, reconnects a pane when its hub restarts, and releases idle
+  hubs.
+- `src/gui/requests.ts` records the device each session asked for, persisted in
+  `localStorage`.
 - `src/gui/panel.tsx` renders the embed and its retry state.
 - `src/index.ts` is the server part. It registers the `sim` tools, the
   `simulator` skill, and the `open` RPC used by `sim_start`.
@@ -153,8 +165,9 @@ bun run typecheck
 
 Server tool code is loaded from `src/`; after changing it, touch
 `~/.config/opencode/opencode.jsonc` to force OpenCode to reload the plugin.
-Main-process GUI code and the window entry reload with it in current builds; if
-a window keeps stale code, reload the window or restart OpenCode once.
+After GUI changes, run `bun run build`: it reloads the main process and the
+window entries. Touching the config alone was not reliable for GUI code; if a
+mounted panel keeps stale code, restart OpenCode once.
 
 ## Uninstall
 

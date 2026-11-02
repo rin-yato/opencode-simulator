@@ -32,9 +32,13 @@ never fuzzy-matches, so `iPhone 17 Pro` will not pick `iPhone 17 Pro 2`.
 `sim_boot` boots without opening the panel. `sim_start` is the normal entry.
 
 The panel is session-scoped. It appears in the strip of the session that
-called the tool, even if the user has switched to another session. If that
-session is not on screen, serve-sim does not start until its tab is shown;
-AXe-backed tools still work in the meantime.
+called the tool, even if the user has switched to another session. It is also
+device-scoped: it streams the simulator `sim_start` was given, even when other
+simulators are already booted. Each session keeps its own device, so two
+sessions can test two simulators independently; switching sessions switches the
+panel to that session's device. `sim_start` only affects the session that calls
+it. If the session is not on screen, serve-sim does not start until its tab is
+shown; AXe-backed tools still work in the meantime.
 
 ## Read the UI
 
@@ -121,6 +125,8 @@ screenshots between every tap.
 - `serve-sim=not running` — the panel has not been shown yet. Open the
   Simulator tab in the calling session, or use AXe-backed tools (status, UI,
   tap, scroll, type, wait, screenshot) which do not need it.
+- The panel shows a different simulator — call `sim_start({ udid })` again with
+  the device you want; the tab follows that device.
 - `sim_keyboard` fails — focus a text field with `sim_tap` first.
 - Tap misses — re-read `sim_ui`; layouts can shift after the keyboard or a
   transition. Prefer text/id over stored coordinates.

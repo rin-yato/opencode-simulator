@@ -4,21 +4,34 @@ Date: 2026-11-02
 Repo: `/Users/yato/Documents/dev/opencode-simulator`
 Status: working local plugin; 16 agent tools, session-scoped GUI panel, bundled
 `simulator` skill.
-Working tree: clean after the session-scoping commit; skill added on top.
+Working tree: uncommitted; panel now targets the requested device.
 
 ## Where we stopped
 
 `sim.start` boots, optionally launches an app, and asks the window entry to
-open the Simulator tab **for the session that called the tool**. The RPC
-event carries `sessionID` and a per-call `request` id, and the window entry
-matches `ctx.sessions.list()` by session id instead of using whichever session
-is focused when the event arrives. This fixes the panel landing in an unrelated
-session when the user switches away mid-call.
+open the Simulator tab **for the session that called the tool**, **on the
+device it booted**. The RPC event carries `sessionID`, `udid`, and a per-call
+`request` id. The window entry matches `ctx.sessions.list()` by session id and
+records the device for that session before mounting the tab.
 
-The entry also answers `opened: false` when the calling session's tab is not in
-that window; the server ignores false acks so another window can still claim
-the request. The ack budget is 8s (cold panel + serve-sim start exceeded the
-old 3s).
+The panel asks the main process for a hub **locked to that device** with
+serve-sim's `--single-device <udid>`. Before this, serve-sim started with no
+device and streamed whichever simulator booted first, so a panel could show an
+unrelated device. Each device now gets its own serve-sim process; a hub is
+released 30s after its last panel closes. The requested device is also kept in
+`localStorage` per session, so a window or plugin reload reopens the same
+simulator instead of falling back to the first booted one.
+
+Multiple sessions and devices are independent: panes are keyed by window and
+session, hubs by device, and the device request by session. Switching sessions
+reattaches the panel to that session's device. Two windows can stream two
+devices at once (verified with two concurrent serve-sim processes, each
+`--single-device` on a different booted simulator).
+
+The entry answers `opened: false` when the calling session's tab is not in that
+window; the server ignores false acks so another window can still claim the
+request. The ack budget is 8s (cold panel + serve-sim start exceeded the old
+3s).
 
 **Known limit:** if the calling session is not the routed one, the tab is
 stored in its strip but not mounted, so serve-sim does not start until the user
@@ -155,6 +168,14 @@ The old Melis `use-simulator` skill's `ui.py` compacting logic was ported into
   change: called while another session was on screen, the tab appeared only in
   the calling session's strip (`panel=opened`), and the serve-sim port came up
   once that session was shown.
+- Device targeting verified with two booted simulators: the panel was showing
+  iPhone 17 Pro, `sim.start({ udid: "iPhone 17e" })` switched the same tab to
+  iPhone 17e (`--single-device D867…`), and a plugin reload restored 17e from
+  `localStorage` instead of the first booted device. The unused hub was released
+  after 30s.
+- Concurrent serving verified: two serve-sim instances, each
+  `--single-device` on a different booted simulator, both reached `/readyz` and
+  reported their own device in `__SIM_PREVIEW__` while running together.
 - The bundled `simulator` skill is registered through `ctx.skill.transform`,
   appears in the model's skill list, and loads with the full guidance. Its
   description explicitly forbids `xcrun simctl`, Xcode, and ad-hoc scripts.
@@ -186,27 +207,41 @@ The old Melis `use-simulator` skill's `ui.py` compacting logic was ported into
 - **`axe button` needs Simulator.app frontmost.** Without focus it exits 0 and
   does nothing. `sim.button` prefers serve-sim, then activates Simulator before
   falling back to AXe.
-- **serve-sim is owned by the GUI hub.** It starts when the panel first
-  registers and keeps running after the panel view closes; only plugin cleanup
-  or window close stops it. So `sim.rotate`, `sim.keyboard`, and button
-  fallbacks work with the panel closed once it has started at least once.
-  `sim.settings` and `sim.statusbar` work even without it because they call the
-  serve-sim CLI/simctl directly.
+- **serve-sim is owned by the GUI hub, one process per device.** It starts when
+  a panel for that device mounts and is locked with `--single-device <udid>`, so
+  it can never stream a different booted simulator. A hub stops 30s after its
+  last panel closes; plugin cleanup stops all of them. `sim.rotate`,
+  `sim.keyboard`, and button fallbacks work while a panel has been open at
+  least once. `sim.settings` and `sim.statusbar` call the serve-sim CLI/simctl
+  directly and need no hub.
 - **serve-sim always opens Simulator.app after boot.** The hub hides it after
   `/readyz`; do not quit Simulator.app, since quitting it shuts down the booted
   device. First hide may prompt for Automation access to System Events.
 - **`sim.keyboard` needs a focused text field** and the panel open. It detects
   visibility from the AX keyboard keys, so `show`/`hide` are idempotent.
-- **After changing server tool code, touch the global `opencode.jsonc`** to
-  force a plugin reload. The GUI bundle and the window entry reload with the
-  plugin in current OpenCode builds; if a window keeps stale code, restart
-  OpenCode once.
-- **`sim.start` is session-scoped.** The `open` event carries the calling
-  `sessionID` and a per-call `request` id. The window entry opens the tab for
-  that session only, with `background: true`; it never falls back to the
-  focused session. A window that does not own the session answers
-  `opened: false`, and the server ignores false acks because another window may
-  own it. The ack budget is 8s.
+- **Reloading:** after server tool changes, touch the global `opencode.jsonc` to
+  reload the plugin server. After GUI changes, `bun run build` reloads the main
+  process and the window entries. Touching the config alone did not reliably
+  reload the main/window code in this build; if a mounted panel keeps stale
+  code, rebuild or restart OpenCode once.
+- **`sim.start` is session- and device-scoped.** The `open` event carries the
+  calling `sessionID`, the `udid`, and a per-call `request` id. The window entry
+  opens the tab for that session only, with `background: true`, and records the
+  device for it; it never falls back to the focused session. A window that does
+  not own the session answers `opened: false`, and the server ignores false acks
+  because another window may own it. The ack budget is 8s.
+- **The panel is locked to one simulator per session.** serve-sim runs with
+  `--single-device <udid>`, so booting another device does not change what the
+  tab streams. The requested device is persisted per session in
+  `localStorage`; reopening the tab after a reload restores the last device.
+  A manual open (`Open Simulator` command/menu) with no recorded device falls
+  back to the first booted simulator.
+- **Multiple sessions are independent.** Panes are keyed by window+session and
+  hubs by device. `sim.start` in session B never changes session A's tab.
+  Switching sessions reattaches the panel to that session's device. Only the
+  routed session's panel is mounted in a window, so background sessions keep
+  working through AXe-backed tools; `sim.rotate`/`sim.keyboard` in a
+  background session still need its tab shown once.
 - **If the calling session is not the routed one**, the tab is stored but not
   mounted, so serve-sim does not start until the user opens that session. AXe
   and simctl tools still work; serve-sim-only features wait for the panel.
@@ -235,8 +270,9 @@ bun run dev            # GUI watch mode
 The server part is loaded from `src/`; it is not bundled. After editing
 `src/server/*` or `src/index.ts`, touch
 `/Users/yato/Documents/dev/dotfiles/config/opencode/opencode.jsonc`.
-Window-entry changes (`src/gui.tsx`, `src/gui/panel.tsx`) need an OpenCode
-restart; touching config only reloads the server and main process.
+GUI changes (`src/gui.tsx`, `src/gui/*`) need `bun run build`; it reloads the
+main process and the window entries in this build. If a mounted panel keeps
+stale code, restart OpenCode once.
 
 ## Next steps
 

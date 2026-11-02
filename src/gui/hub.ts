@@ -18,6 +18,7 @@ const HubState = Schema.Struct({
   pid: Schema.Int,
   port: Schema.Int,
   cli: Schema.String,
+  device: Schema.optional(Schema.String),
 })
 
 type HubState = typeof HubState.Type
@@ -28,9 +29,22 @@ interface Cli {
   readonly env: NodeJS.ProcessEnv
 }
 
+export interface HubStarted {
+  /** The simulator the hub serves. Undefined for the default (first booted) hub. */
+  readonly device: string | undefined
+  readonly url: string
+}
+
 export interface HubManager {
-  readonly ensure: () => Promise<{ readonly url: string }>
-  readonly onStarted: (listener: (url: string) => void) => () => void
+  /**
+   * Start or reuse a hub for one simulator. A device gets its own serve-sim
+   * process locked with `--single-device`, so the preview can never stream a
+   * different booted simulator. Omit `device` for the legacy default hub.
+   */
+  readonly ensure: (device?: string) => Promise<{ readonly url: string }>
+  readonly onStarted: (listener: (started: HubStarted) => void) => () => void
+  /** Stop the hub for one device. No-op when it never started. */
+  readonly release: (device?: string) => Promise<void>
   readonly dispose: () => Promise<void>
 }
 
@@ -144,9 +158,24 @@ const stopChild = async (child: ChildProcess) => {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
 }
 
+interface Slot {
+  /** Undefined for the default hub, which follows whichever device booted first. */
+  readonly device: string | undefined
+  child: ChildProcess | null
+  port: number | null
+  url: string | null
+  starting: Promise<{ readonly url: string }> | null
+  restartTimer: ReturnType<typeof setTimeout> | null
+  restartDelay: number
+  startedAt: number
+  /** No panel wants this device any more; a start in flight must stop itself. */
+  released: boolean
+  readonly intentionalStops: Set<ChildProcess>
+}
+
 export function createHubManager(ctx: MainContext): HubManager {
-  const stored = ctx.storage.store("hub", {
-    schema: Schema.NullOr(HubState),
+  const stored = ctx.storage.store("hubs", {
+    schema: Schema.NullOr(Schema.Array(HubState)),
     initial: null,
   })
   const explicitCli =
@@ -155,32 +184,43 @@ export function createHubManager(ctx: MainContext): HubManager {
   const keepSimulatorVisible =
     process.env.OPENCODE_SIMULATOR_SHOW_SIMULATOR === "1" || ctx.options.showSimulator === true
 
+  const slots = new Map<string, Slot>()
+  const startedListeners = new Set<(started: HubStarted) => void>()
   let stopped = false
-  let starting: Promise<{ readonly url: string }> | null = null
-  let child: ChildProcess | null = null
-  let currentUrl: string | null = null
-  let restartTimer: ReturnType<typeof setTimeout> | null = null
-  let restartDelay = RESTART_BASE_MS
-  let startedAt = 0
-  const intentionalStops = new Set<ChildProcess>()
-  const startedListeners = new Set<(url: string) => void>()
+
+  const persist = () => {
+    const entries: HubState[] = []
+    for (const slot of slots.values()) {
+      if (!slot.child || !slot.child.pid || !slot.port) continue
+      entries.push({
+        pid: slot.child.pid,
+        port: slot.port,
+        cli: resolveCli(explicitCli).command,
+        ...(slot.device ? { device: slot.device } : {}),
+      })
+    }
+    stored.set(entries.length > 0 ? entries : null)
+  }
 
   const reapStale = () => {
     const previous = stored.value
     if (!previous) return
-    if (isAlive(previous.pid) && commandLine(previous.pid).includes(HUB_PACKAGE)) {
+    for (const entry of previous) {
+      if (!isAlive(entry.pid) || !commandLine(entry.pid).includes(HUB_PACKAGE)) continue
       ctx.log.write("warn", "Stopping a simulator hub left behind by a previous run", {
-        pid: previous.pid,
-        port: previous.port,
+        pid: entry.pid,
+        port: entry.port,
+        device: entry.device,
       })
       try {
-        process.kill(previous.pid, "SIGTERM")
+        process.kill(entry.pid, "SIGTERM")
       } catch {}
     }
     stored.set(null)
   }
 
-  const start = async (): Promise<{ readonly url: string }> => {
+  const startSlot = async (slot: Slot): Promise<{ readonly url: string }> => {
+    if (slot.released) throw new Error("The simulator hub was released.")
     const port = await reservePort()
     const cli = resolveCli(explicitCli)
     const args = [
@@ -189,6 +229,10 @@ export function createHubManager(ctx: MainContext): HubManager {
       "127.0.0.1",
       "--port",
       String(port),
+      // Locked to the requested device: without this serve-sim streams whichever
+      // simulator booted first, which is the wrong one when the tool just booted
+      // another device.
+      ...(slot.device ? ["--single-device", slot.device] : []),
     ]
 
     const processHandle = spawn(cli.command, args, {
@@ -198,41 +242,49 @@ export function createHubManager(ctx: MainContext): HubManager {
       detached: false,
     })
 
-    child = processHandle
-    startedAt = Date.now()
-    stored.set({ pid: processHandle.pid ?? 0, port, cli: cli.command })
+    slot.child = processHandle
+    slot.port = port
+    slot.startedAt = Date.now()
+    persist()
 
     processHandle.stdout?.on("data", (chunk: Buffer) => {
       const output = chunk.toString().trim()
-      if (output) ctx.log.write("debug", "simulator hub output", { output })
+      if (output) ctx.log.write("debug", "simulator hub output", { device: slot.device, output })
     })
     processHandle.stderr?.on("data", (chunk: Buffer) => {
       const output = chunk.toString().trim()
-      if (output) ctx.log.write("warn", "simulator hub stderr", { output })
+      if (output) ctx.log.write("warn", "simulator hub stderr", { device: slot.device, output })
     })
 
     processHandle.once("error", (cause) => {
-      ctx.log.write("error", "simulator hub failed to start", { error: String(cause) })
+      ctx.log.write("error", "simulator hub failed to start", {
+        device: slot.device,
+        error: String(cause),
+      })
     })
 
     processHandle.once("exit", (code, signal) => {
-      if (child === processHandle) {
-        child = null
-        currentUrl = null
+      if (slot.child === processHandle) {
+        slot.child = null
+        slot.port = null
+        slot.url = null
       }
-      if (stopped || intentionalStops.delete(processHandle)) return
-      ctx.log.write("warn", "simulator hub exited", { code, signal })
-      stored.set(null)
-      const uptime = Date.now() - startedAt
-      if (uptime >= 60_000) restartDelay = RESTART_BASE_MS
-      const delay = restartDelay
-      restartDelay = Math.min(restartDelay * 2, RESTART_MAX_MS)
-      if (restartTimer) clearTimeout(restartTimer)
-      restartTimer = setTimeout(() => {
-        restartTimer = null
+      persist()
+      if (stopped || slot.intentionalStops.delete(processHandle)) return
+      ctx.log.write("warn", "simulator hub exited", { device: slot.device, code, signal })
+      const uptime = Date.now() - slot.startedAt
+      if (uptime >= 60_000) slot.restartDelay = RESTART_BASE_MS
+      const delay = slot.restartDelay
+      slot.restartDelay = Math.min(slot.restartDelay * 2, RESTART_MAX_MS)
+      if (slot.restartTimer) clearTimeout(slot.restartTimer)
+      slot.restartTimer = setTimeout(() => {
+        slot.restartTimer = null
         if (stopped) return
-        void ensure().catch((cause) => {
-          ctx.log.write("error", "simulator hub restart failed", { error: String(cause) })
+        void ensureSlot(slot).catch((cause) => {
+          ctx.log.write("error", "simulator hub restart failed", {
+            device: slot.device,
+            error: String(cause),
+          })
         })
       }, delay)
     })
@@ -241,44 +293,104 @@ export function createHubManager(ctx: MainContext): HubManager {
     try {
       await waitForReady(url, ctx.signal)
     } catch (cause) {
-      intentionalStops.add(processHandle)
+      slot.intentionalStops.add(processHandle)
       await stopChild(processHandle)
-      if (child === processHandle) {
-        child = null
-        currentUrl = null
+      if (slot.child === processHandle) {
+        slot.child = null
+        slot.port = null
+        slot.url = null
       }
-      stored.set(null)
+      persist()
       throw cause
     }
-    currentUrl = url
+    slot.url = url
+    if (slot.released) {
+      slot.intentionalStops.add(processHandle)
+      await stopChild(processHandle)
+      if (slot.child === processHandle) {
+        slot.child = null
+        slot.port = null
+        slot.url = null
+      }
+      persist()
+      throw new Error("The simulator hub was released.")
+    }
     if (!keepSimulatorVisible) hideSimulatorWindow(ctx)
-    for (const listener of startedListeners) listener(url)
+    for (const listener of startedListeners) listener({ device: slot.device, url })
     return { url }
   }
 
-  const ensure = () => {
+  const ensureSlot = (slot: Slot) => {
     if (stopped) return Promise.reject(new Error("The simulator hub is stopped."))
-    if (currentUrl) return Promise.resolve({ url: currentUrl })
-    starting ??= start().finally(() => {
-      starting = null
+    if (slot.url) return Promise.resolve({ url: slot.url })
+    slot.starting ??= startSlot(slot).finally(() => {
+      slot.starting = null
     })
-    return starting
+    return slot.starting
+  }
+
+  const ensure = (device?: string) => {
+    const key = device ?? ""
+    let slot = slots.get(key)
+    if (!slot) {
+      slot = {
+        device,
+        child: null,
+        port: null,
+        url: null,
+        starting: null,
+        restartTimer: null,
+        restartDelay: RESTART_BASE_MS,
+        startedAt: 0,
+        released: false,
+        intentionalStops: new Set(),
+      }
+      slots.set(key, slot)
+    }
+    return ensureSlot(slot)
+  }
+
+  const release = async (device?: string) => {
+    const key = device ?? ""
+    const slot = slots.get(key)
+    if (!slot) return
+    slots.delete(key)
+    slot.released = true
+    if (slot.restartTimer) {
+      clearTimeout(slot.restartTimer)
+      slot.restartTimer = null
+    }
+    if (slot.starting) await slot.starting.catch(() => {})
+    const current = slot.child
+    slot.child = null
+    slot.port = null
+    slot.url = null
+    if (current) {
+      slot.intentionalStops.add(current)
+      await stopChild(current)
+    }
+    persist()
   }
 
   const dispose = async () => {
     stopped = true
-    if (restartTimer) {
-      clearTimeout(restartTimer)
-      restartTimer = null
-    }
-    const current = child
-    child = null
-    currentUrl = null
-    if (current) {
-      intentionalStops.add(current)
-      await stopChild(current)
+    const children: ChildProcess[] = []
+    for (const slot of slots.values()) {
+      if (slot.restartTimer) {
+        clearTimeout(slot.restartTimer)
+        slot.restartTimer = null
+      }
+      const current = slot.child
+      slot.child = null
+      slot.port = null
+      slot.url = null
+      if (current) {
+        slot.intentionalStops.add(current)
+        children.push(current)
+      }
     }
     stored.set(null)
+    await Promise.all(children.map((child) => stopChild(child)))
   }
 
   reapStale()
@@ -290,6 +402,7 @@ export function createHubManager(ctx: MainContext): HubManager {
       startedListeners.add(listener)
       return () => startedListeners.delete(listener)
     },
+    release,
     dispose,
   }
 }
