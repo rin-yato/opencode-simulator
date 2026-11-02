@@ -1,0 +1,32 @@
+{
+  "name": "opencode-simulator",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode Desktop GUI plugin that embeds an iOS Simulator.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./gui-experimental": "./dist/gui-experimental.cjs"
+  },
+  "files": [
+    "src",
+    "dist"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.2.5",
+    "expo-device-hub": "0.19.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "electron": "^45.2.1",
+    "solid-js": "^1.9.18",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5",
+    "vite-plugin-solid": "^2.11.15"
+  }
+}
