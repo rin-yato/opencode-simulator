@@ -111,6 +111,9 @@ export function SimulatorPanel(props: { session: MountedSession }) {
         >
           <Show when={loading()}>
             <ctx.ui.Loader size="large" />
+            <div style={{ "font-size": "13px", "line-height": "1.5", opacity: 0.8 }}>
+              {ctx.t("panel.starting")}
+            </div>
           </Show>
           <Show when={!loading()}>
             <div style={{ "font-size": "13px", "line-height": "1.5", opacity: 0.8 }}>

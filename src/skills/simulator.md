@@ -21,10 +21,12 @@ Tool names below are the agent-facing aliases. In Code Mode they are
 
 ## Start
 
-1. `sim_devices` — list simulators, state, runtime, and UDID.
+1. `sim_devices` — list simulators, state, runtime, and UDID. Add
+   `{ disk: true }` for size and `copy`/`template` tags.
 2. `sim_start({ udid?, app?, label? })` — boot if needed, launch the app by
    bundle id, and open the Simulator panel **in the calling session**. It
-   returns `panel=...` and the serve-sim URL.
+   returns `panel=...` and the serve-sim URL. The panel opens before boot
+   finishes, so a slow first boot shows the panel loader.
 3. `sim_status` — confirm device, app, screen size, AXe, and serve-sim.
 
 `udid` accepts a UDID, an exact device name, or a unique name fragment.
@@ -41,6 +43,12 @@ target a specific device; passing a UDID another session owns is an explicit
 choice to share it. `sim_boot` boots without opening the panel. `sim_start` is
 the normal entry.
 
+The first cold copy can take minutes because a never-booted simulator prepares
+its data volume. While that session runs, the plugin prepares a shut-down
+`<model> — template` device. Later copies clone it and boot in seconds. If
+`sim_start` says `template=preparing`, the next session benefits; if it says
+`template=used`, the fast path was used.
+
 ## Parallel devices
 
 A simulator is one UDID. Two sessions targeting the same UDID share one screen,
@@ -55,10 +63,11 @@ sim_start({ app: "com.example.app", label: "store profile settings" })
 The session that already owns the device keeps it; the other session gets a
 copy named after its `label`, or after the session title when no label is given.
 The copy uses the candidate's model and runtime, installs `app` from it, and
-becomes that session's default. App data is not copied; the copy starts with a
-fresh install. If several simulators are already booted, an unowned one is
-preferred; when all belong to other sessions, the first booted device is the
-copy source.
+becomes that session's default. It clones a warm template when one is ready, so
+the first cold copy is the only slow one. App data is not copied from the
+source; the copy starts with a fresh app install. If several simulators are
+already booted, an unowned one is preferred; when all belong to other sessions,
+the first booted device is the copy source.
 
 Choose a label from what the session is actually testing. It should be short,
 specific, and readable in `sim_devices`: `"create order flow"`,
@@ -81,6 +90,23 @@ When the parallel work is done, delete the copy with
 `sim_delete({ udid })`. It shuts the device down first and refuses if another
 session still owns it unless `force: true`. Do not delete the user's main
 simulator unless they ask.
+
+## Cleanup
+
+Automatic copies are leased and cleaned up after 14 days idle. Only shut-down,
+plugin-created copies are eligible; booted devices, templates, and `sim_create`
+devices are not. Check space and tags, then prune early if needed:
+
+```
+sim_devices({ disk: true })
+sim_prune({ olderThanDays: 7, dryRun: true })   # list
+sim_prune({ olderThanDays: 7, dryRun: false })  # delete
+```
+
+`sim_prune` defaults to a dry run, so passing `dryRun: false` is required to
+delete. The plugin runs the same sweep on startup. A `<model> — template`
+device is the warm base for copies; do not delete one unless you want the next
+copy to be slow again (`sim_delete` is safe and the template is recreated).
 
 The panel is session-scoped. It appears in the strip of the session that
 called the tool, even if the user has switched to another session. It is also
@@ -181,6 +207,13 @@ screenshots between every tap.
 - `note=this simulator is also used by another session` — you passed a UDID that
   another session owns, so sharing is intentional. Omit `udid` next time to let
   `sim_start` create an independent copy.
+- `template=preparing` — the first cold copy is booting and a warm template is
+  being prepared in the background. Do not wait for it; the next session copies
+  in seconds. `template=used` means the fast path ran.
+- `<model> — template` in `sim_devices` is the warm base, not a session device.
+  Omit `udid` to clone it; `sim_start({ udid: "<template>" })` is refused.
+- `sim_prune` deletes nothing unless `dryRun: false` is passed. It only touches
+  shut-down automatic copies, never templates or user devices.
 - `sim_keyboard` fails — focus a text field with `sim_tap` first.
 - Tap misses — re-read `sim_ui`; layouts can shift after the keyboard or a
   transition. Prefer text/id over stored coordinates.

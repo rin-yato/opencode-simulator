@@ -66,8 +66,10 @@ node .../serve-sim.js --host 127.0.0.1 --port <ephemeral> --single-device <udid>
 ```
 
 `--single-device` is what keeps a panel from streaming whichever simulator
-booted first. Hubs restart with exponential backoff if the process exits
-unexpectedly.
+booted first. A hub start waits for the device to boot (serve-sim boots it when
+needed), so the panel can open before `sim_start` finishes. Releasing the pane
+aborts that wait and stops the child. Hubs restart with exponential backoff if
+the process exits unexpectedly.
 
 `src/gui/serve-sim.ts` contains the process-level helpers: CLI resolution, port
 reservation, readiness polling, child shutdown, and the optional hiding of
@@ -88,12 +90,20 @@ requested app bundle from the source, and claims the copy. A `label` such as
 Copy`; without one, the session title is used when available. An explicit
 `udid` skips the check, so sharing is a deliberate choice.
 
+Copies come from a warm template when one exists. `templates` stores one
+shut-down device per device type and runtime that has completed one boot. A
+cold copy creates that template in the background, so the next copy is a
+`simctl clone` (seconds to create, seconds to boot) instead of a fresh device
+whose first boot takes minutes. Templates are never used as session devices.
+
 What is scoped:
 
 | Scope | Where | Bound |
 |---|---|---|
 | Session → device | server storage `session-devices` | 500 entries |
 | Session → requested device | window `localStorage` `opencode-simulator.devices` | 500 entries |
+| Automatic copy → session | server storage `simulator-copies` | 200 entries |
+| Model + runtime → template | server storage `simulator-templates` | 8 entries |
 | Window + session → pane | GUI main memory | closed with the tab/window |
 | Device → hub | GUI main memory + storage `hubs` | released 30s after the last pane |
 | Pane → embed | GUI main memory | disposed with the pane |
@@ -105,8 +115,10 @@ For parallel work on the same model, `sim_start` creates a copy automatically
 when another session owns the candidate device. `sim_create` does the same
 explicitly, with a chosen source and name. It copies the device type and
 runtime, boots the copy, and installs the requested app bundle from the source.
-It does not copy app data: `simctl clone` would, but it requires the source to
-be shut down.
+A template copy inherits the template's data volume; the app bundle is still
+installed from the source so a rebuilt app is current. `sim_create` does not
+copy app data. `simctl clone` would, but it requires the source to be shut down,
+which is why only the dedicated template is cloned.
 
 ## Lifecycle and cleanup
 
@@ -121,20 +133,30 @@ processes:
   stored pids, checks them with `ps`, and terminates them.
 - serve-sim gets SIGTERM, then SIGKILL after two seconds. Simulator.app and its
   booted devices stay as they are.
+- Automatic copies are leased. On plugin start and on `sim_prune`, shut-down
+  copies idle for 14 days are deleted. The TTL is
+  `OPENCODE_SIMULATOR_COPY_TTL_DAYS` or the `copyTtlDays` option; `0` disables
+  it. Booted copies are skipped.
+- Templates are not auto-deleted. `sim_delete` on a template removes its record;
+  the next copy prepares a new one.
 
 Bounded local state:
 
 - `session-devices` and `opencode-simulator.devices` are capped at 500 entries.
   Each entry is a session id and a UDID.
+- `simulator-copies` is capped at 200 leases. A lease is a UDID, owner session,
+  name, and two timestamps.
+- `simulator-templates` is capped at 8 entries, one per model/runtime.
 - Screenshots in `$TMPDIR/opencode-simulator/` are pruned to 24 hours and 200
   files on capture.
 - serve-sim state files in `$TMPDIR/serve-sim/` whose pid is dead are removed
   when the server plugin loads. Logs older than a week are removed.
 - `sim_status` ignores a serve-sim state file whose pid is gone.
 
-Created simulators are the exception. `sim_create` and the automatic copy in
-`sim_start` make a real multi-gigabyte device image. It is never deleted
-automatically; `sim_delete` is explicit.
+Explicit `sim_create` devices are the exception. They are real multi-gigabyte
+images and are never deleted automatically; `sim_delete` is explicit. Automatic
+copies are deleted by the lease TTL, and a warm template is one reusable image
+per model/runtime.
 
 ## Why serve-sim runs under Node
 
@@ -152,12 +174,15 @@ does not use `process.execPath`, `ELECTRON_RUN_AS_NODE`, or `npx`.
 | `src/index.ts` | Server entry: skill, RPC, tool registration |
 | `src/rpc.ts` | Portable `open`/`opened` contract |
 | `src/server/tools/context.ts` | Tool context, result helpers, device resolution |
-| `src/server/tools/lifecycle.ts` | `devices`, `boot`, `create`, `delete`, `start`, `launch` |
+| `src/server/tools/lifecycle.ts` | `devices`, `boot`, `create`, `delete`, `prune`, `start`, `launch` |
 | `src/server/tools/inspect.ts` | `status`, `ui`, `wait`, `screenshot` |
 | `src/server/tools/input.ts` | `tap`, `scroll`, `type`, `button`, `rotate` |
 | `src/server/tools/settings.ts` | `settings`, `keyboard`, `statusbar` |
-| `src/server/devices.ts` | `simctl` device list, match, boot, create, delete |
+| `src/server/devices.ts` | `simctl` list, match, boot, create, clone, shutdown, delete |
 | `src/server/copy-name.ts` | Semantic copy names from a device and label |
+| `src/server/copies.ts` | Bounded leases for automatically created copies |
+| `src/server/templates.ts` | Warm template UDIDs per model/runtime |
+| `src/server/cleanup.ts` | TTL pruning for leased copies |
 | `src/server/accessibility.ts` | AX tree parsing and compaction |
 | `src/server/actions.ts` | Input actions and app launch |
 | `src/server/screenshot.ts` | Capture, resize, retention |
@@ -176,7 +201,7 @@ does not use `process.execPath`, `ELECTRON_RUN_AS_NODE`, or `npx`.
 
 ## Tests
 
-Bun tests cover the pure pieces: device matching, copy naming, the
-session-device cap, claim and forget behavior, and the localStorage session
-cap. There is no automated test for serve-sim or Electron; those require a real
-macOS session.
+Bun tests cover the pure pieces: device matching and size formatting, copy
+naming, session-device cap/claim/forget, copy leases and expiry, template
+storage, prune formatting, and the localStorage session cap. There is no
+automated test for serve-sim or Electron; those require a real macOS session.

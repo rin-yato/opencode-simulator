@@ -1,3 +1,5 @@
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { run } from "./exec"
 
 export interface Device {
@@ -61,6 +63,33 @@ export async function listDevices(options: CommandOptions = {}): Promise<Device[
 }
 
 const describe = (device: Device) => `${device.name} (${device.udid}) [${device.state}]`
+
+/** Approximate on-disk size of one simulator, in kilobytes. */
+export async function deviceSize(
+  udid: string,
+  options: CommandOptions = {},
+): Promise<number | undefined> {
+  const path = join(homedir(), "Library", "Developer", "CoreSimulator", "Devices", udid)
+  try {
+    const { stdout } = await run("du", ["-sk", path], {
+      signal: options.signal,
+      timeout: 30_000,
+    })
+    const kb = Number(stdout.trim().split(/\s+/)[0])
+    return Number.isFinite(kb) && kb >= 0 ? kb : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export const formatSize = (kb: number | undefined): string => {
+  if (kb === undefined) return "-"
+  if (kb < 1_024) return `${kb} KB`
+  const mb = kb / 1_024
+  if (mb < 1_024) return `${mb.toFixed(mb < 10 ? 1 : 0)} MB`
+  const gb = mb / 1_024
+  return `${gb.toFixed(gb < 10 ? 2 : 1)} GB`
+}
 
 /**
  * Resolve a UDID, an exact name, or a unique name fragment. Ambiguous names fail
@@ -155,12 +184,12 @@ export async function bootDevice(device: Device, options: CommandOptions = {}): 
   } catch (cause) {
     // Another process may have booted it between listDevices and here.
     const fresh = await resolveDevice(device.udid, options).catch(() => undefined)
-    if (!fresh || fresh.state !== "Booted") throw cause
+    if (!fresh || (fresh.state !== "Booted" && fresh.state !== "Booting")) throw cause
   }
 
   await run("xcrun", ["simctl", "bootstatus", device.udid, "-b"], {
     signal: options.signal,
-    timeout: 180_000,
+    timeout: 420_000,
   })
   return `booted ${device.name} (${device.udid})`
 }
@@ -196,8 +225,10 @@ export async function createDeviceFrom(
     ["simctl", "create", name, source.deviceType, source.runtimeId],
     { signal: options.signal, timeout: 60_000 },
   )
+  const udid = stdout.trim()
+  if (!udid) throw new Error("xcrun simctl create returned no UDID.")
   return {
-    udid: stdout.trim(),
+    udid,
     name,
     state: "Shutdown",
     runtime: source.runtime,
@@ -205,6 +236,48 @@ export async function createDeviceFrom(
     deviceType: source.deviceType,
     available: true,
   }
+}
+
+/**
+ * Clone a shut-down simulator, including its data volume. APFS shares blocks
+ * with the source until the clone writes, so this is much cheaper than a fresh
+ * device whose first boot has to prepare a data volume.
+ */
+export async function cloneDevice(
+  source: Device,
+  name: string,
+  options: CommandOptions = {},
+): Promise<Device> {
+  if (source.state === "Booted") {
+    throw new Error(`Shut down ${source.name} before cloning it.`)
+  }
+  const { stdout } = await run("xcrun", ["simctl", "clone", source.udid, name], {
+    signal: options.signal,
+    timeout: 120_000,
+  })
+  const udid = stdout.trim()
+  if (!udid) throw new Error("xcrun simctl clone returned no UDID.")
+  return {
+    udid,
+    name,
+    state: "Shutdown",
+    runtime: source.runtime,
+    runtimeId: source.runtimeId,
+    deviceType: source.deviceType,
+    available: true,
+  }
+}
+
+export async function shutdownDevice(
+  device: Device,
+  options: CommandOptions = {},
+): Promise<string> {
+  if (device.state !== "Booted") return `already shut down ${device.name} (${device.udid})`
+  await run("xcrun", ["simctl", "shutdown", device.udid], {
+    signal: options.signal,
+    timeout: 60_000,
+  })
+  return `shut down ${device.name} (${device.udid})`
 }
 
 /**

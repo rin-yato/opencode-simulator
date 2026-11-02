@@ -1,7 +1,9 @@
 import type { Plugin } from "@opencode/plugin"
+import type { Copies } from "../copies"
 import { resolveDevice, resolveStartDevice, type Device } from "../devices"
 import type { HubOptions } from "../serve-sim"
 import type { SessionDevices } from "../session-devices"
+import type { Templates } from "../templates"
 
 /** The part of the tool context this plugin uses. */
 export interface ToolRuntime {
@@ -34,6 +36,9 @@ export type OpenPanel = (udid: string, sessionID: string) => Promise<boolean>
 export interface SimulatorContext {
   readonly hub: HubOptions
   readonly sessions: SessionDevices
+  readonly templates: Templates
+  readonly copies: Copies
+  readonly copyTtlDays: number
   readonly openPanel?: OpenPanel
   /** Best-effort session title, used to name an automatic copy when no label is given. */
   readonly sessionTitle?: (sessionID: string) => Promise<string | undefined>
