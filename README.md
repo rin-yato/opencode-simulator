@@ -42,12 +42,17 @@ Add the plugin to `~/.config/opencode/opencode.jsonc`:
 
 Using a checkout instead:
 
+<details>
+<summary>Local checkout</summary>
+
 ```sh
 bun install
 bun run build
 ```
 
 Then add the checkout's absolute path to `plugins`.
+
+</details>
 
 AXe 1.8+ is recommended for accessibility reads and input. Without it, the
 plugin falls back to serve-sim.
@@ -115,14 +120,6 @@ More detail: [docs/architecture.md](docs/architecture.md).
 - Closing the panel stops its stream after 30 seconds. The simulator keeps
   running.
 - `sim_delete` is destructive: it removes the simulator and all its data.
-
-## Development
-
-```sh
-bun install
-bun run check
-bun run build
-```
 
 ## License
 
