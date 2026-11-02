@@ -129,8 +129,12 @@ out.
 Namespace `sim`; Code Mode sees them as `tools.sim.<name>`.
 
 - `sim.devices` — list simulators with state, runtime, and UDID.
-- `sim.boot` — boot a device headlessly; defaults to the only booted/installed
-  device.
+- `sim.boot` — boot a device headlessly; defaults to this session's device,
+  then the only booted/installed device.
+- `sim.create` — create and (when installing an app) boot a same-model device;
+  install the app from a source simulator; make it this session's default.
+- `sim.delete` — shut down and delete a simulator; refuses if another session
+  owns it unless `force: true`.
 - `sim.start` — boot if needed, optionally launch an app, then open the
   Simulator panel and wait for serve-sim.
 - `sim.status` — device, app, screen, axe version, serve-sim port.
@@ -219,6 +223,39 @@ The old Melis `use-simulator` skill's `ui.py` compacting logic was ported into
 - Auto-hide verified end to end: unhid Simulator, killed serve-sim, the hub
   restarted on a new port, and Simulator became hidden while the stream kept
   running.
+- `sim.delete` shut down and removed a create-only test device, and cleared
+  its `session-devices` entries so `sim.status` fell back to the booted 17 Pro.
+- Screenshot pruning ran on capture (no old files yet); stale serve-sim state
+  for a deleted UDID was removed on the next server load.
+
+## Lifecycle and cleanup
+
+There is no explicit "session ended" event in the plugin. Resources are tied to
+panels and processes, so ending a session cleans up the visible things:
+
+- Closing the Simulator tab, deleting the session, or closing the window
+  unmounts the panel, disposes its `WebContentsView`, and starts the 30s idle
+  timer for that device's hub.
+- If another pane still uses the same device (another window), the hub stays.
+- Quitting OpenCode stops every hub; a crash is recovered next launch because
+  `hubs` stores the child pids and `reapStale` kills them.
+- serve-sim gets SIGTERM and stops its capture/helper children; Simulator.app
+  stays open, and its booted devices stay booted until shut down or deleted.
+
+Small state persists by design and is bounded:
+
+- Window `localStorage` `opencode-simulator.devices` (session key -> UDID) and
+  server storage `session-devices` in `~/.local/share/opencode/opencode.db`
+  (`kv` table). Both cap at 500 entries; each entry is ~50 bytes.
+- Hubs store pids/ports/devices in GUI storage; entries are replaced on start
+  and cleared on stop or exit.
+- Screenshots in `$TMPDIR/opencode-simulator/` are pruned to 24h and 200 files.
+- serve-sim state files (`$TMPDIR/serve-sim/server-<udid>.json`) for dead pids
+  are removed when the server plugin loads; `sim.status` ignores a state file
+  whose pid is gone.
+- **Created simulators are the exception.** `sim.create` makes a real device
+  with its own disk image (hundreds of MB to GBs). It is not auto-deleted;
+  `sim.delete` is explicit.
 
 ## Gotchas
 
@@ -314,16 +351,14 @@ stale code, restart OpenCode once.
    subagent opens the panel in the owning session.
 2. Verify `sim.rotate` on SpringBoard or a rotatable app; otherwise remove or
    document it as serve-sim-only.
-3. Add `sim.delete` (or a `prune` tool) so created parallel devices can be
-   cleaned up without `xcrun simctl`.
-4. Remove the old project-local Melis `use-simulator` skill now that the plugin
+3. Remove the old project-local Melis `use-simulator` skill now that the plugin
    ships `simulator`; keep only project-specific notes if any remain.
-5. Consider `sim.batch` for multi-step flows in one tool call.
-6. Consider lazily starting serve-sim from the server part so `sim.rotate`,
+4. Consider `sim.batch` for multi-step flows in one tool call.
+5. Consider lazily starting serve-sim from the server part so `sim.rotate`,
    `sim.keyboard`, and button fallbacks work without a mounted panel.
-7. Consider returning the screenshot as attached image content reliably; today
+6. Consider returning the screenshot as attached image content reliably; today
    Code Mode only surfaces the text path.
-8. Add a small smoke-test script for `status`/`ui`/`tap`/`wait`.
+7. Add a small smoke-test script for `status`/`ui`/`tap`/`wait`.
 
 ## Fresh-session checklist
 

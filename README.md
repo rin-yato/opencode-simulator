@@ -97,11 +97,28 @@ its own device with `sim_create({ from, app })`; it creates a same-model
 simulator, installs the app from the source, and makes the new UDID that
 session's default. The source keeps running.
 
+### Lifecycle
+
+- Panels are views: closing the tab, deleting the session, or closing the window
+  disposes the native view. The serve-sim hub for a device stops 30s after its
+  last panel closes; quitting OpenCode stops all hubs. A crash is recovered on
+  the next launch by reaping the pids stored in plugin storage.
+- Per-session device mappings are tiny (a session key and a UDID). They are
+  capped at 500 entries in both the window and the server store.
+- Screenshots live in `$TMPDIR/opencode-simulator/` and are pruned to the last
+  24 hours, max 200 files.
+- Stale serve-sim state files (dead pid) are removed when the server plugin
+  loads, and `sim_status` ignores a port whose process is gone.
+- **Simulators are not auto-deleted.** A device created with `sim_create` is a
+  real simulator with its own disk image. Delete it with
+  `sim_delete({ udid })` when the parallel work is done.
+
 | Tool | Use |
 |---|---|
 | `sim_devices` | List simulators, states, runtimes, and UDIDs |
 | `sim_boot` | Boot a device headlessly by UDID or name |
 | `sim_create` | Create a same-model copy, optionally install an app from the source, for a parallel session |
+| `sim_delete` | Shut down and delete a simulator; refuses if another session owns it unless `force` |
 | `sim_start` | Boot if needed, optionally launch an app, and open the Simulator panel on that device |
 | `sim_status` | Device, app, screen size, AXe version, serve-sim port |
 | `sim_ui` | Compact action table; `find` for one control, `mode: "interactive"` for the next action |

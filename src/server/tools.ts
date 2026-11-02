@@ -1,7 +1,7 @@
 import { basename } from "node:path"
 import { pathToFileURL } from "node:url"
 import { Plugin } from "@opencode/plugin"
-import { bootDevice, createDeviceFrom, installAppFrom, listDevices, resolveDevice, resolveStartDevice, type Device } from "./devices"
+import { bootDevice, createDeviceFrom, deleteDevice, installAppFrom, listDevices, resolveDevice, resolveStartDevice, type Device } from "./devices"
 import { findRows, formatMatches, formatSnapshot, readSnapshot, resolveRow } from "./ax"
 import {
   launchApp,
@@ -15,7 +15,7 @@ import {
   typeText,
 } from "./actions"
 import { run } from "./exec"
-import { serveSimPort, type HubOptions } from "./serve-sim"
+import { cleanServeSimState, serveSimPort, type HubOptions } from "./serve-sim"
 import {
   readSetting,
   readSettings,
@@ -112,6 +112,11 @@ interface CreateInput {
   readonly app?: string
 }
 
+interface DeleteInput {
+  readonly udid: string
+  readonly force?: boolean
+}
+
 const uniqueDeviceName = (base: string, devices: readonly Device[]): string => {
   const taken = new Set(devices.map((device) => device.name))
   let name = `${base} Copy`
@@ -153,8 +158,11 @@ export async function registerTools(
   // Each session remembers the simulator it booted or started. Omitting `udid`
   // then targets that device, so two sessions can test two simulators at once
   // without passing a UDID on every call.
+  // Screenshot retention (24h, max 200) lives in `screenshot` in actions.ts.
   const SESSION_DEVICES = "session-devices"
+  const MAX_SESSION_DEVICES = 500
   const remembered = new Map<string, string>()
+  void cleanServeSimState().catch(() => {})
   try {
     const stored = await ctx.storage.get(SESSION_DEVICES)
     if (stored && typeof stored === "object" && !Array.isArray(stored)) {
@@ -171,7 +179,13 @@ export async function registerTools(
 
   const remember = async (sessionID: string, device: string) => {
     if (remembered.get(sessionID) === device) return
+    remembered.delete(sessionID)
     remembered.set(sessionID, device)
+    while (remembered.size > MAX_SESSION_DEVICES) {
+      const oldest = remembered.keys().next().value
+      if (oldest === undefined) break
+      remembered.delete(oldest)
+    }
     await ctx.storage.set(SESSION_DEVICES, Object.fromEntries(remembered)).catch(() => {})
   }
 
@@ -364,6 +378,56 @@ export async function registerTools(
             name: created.name,
             source: source.udid,
           })
+        } catch (cause) {
+          return fail(cause)
+        }
+      },
+    })
+
+    editor.add({
+      name: "delete",
+      description:
+        "Delete a simulator by UDID or exact name, shutting it down first. Destructive: the device and all its data are removed. Use it to clean up sim_create copies. Refuses when another session owns the device unless force is true.",
+      input: {
+        type: "object",
+        properties: {
+          udid: {
+            type: "string",
+            description: "Simulator UDID or exact name to delete. Required.",
+          },
+          force: {
+            type: "boolean",
+            description: "Delete even if another session is using this simulator.",
+          },
+        },
+        required: ["udid"],
+        additionalProperties: false,
+      },
+      options,
+      execute: async (raw, context) => {
+        try {
+          const input = raw as DeleteInput
+          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const owners = [...remembered.entries()].filter(
+            ([session, owned]) => session !== context.sessionID && owned === device.udid,
+          )
+          if (owners.length > 0 && input.force !== true) {
+            throw new Error(
+              `Another session is using ${device.name} (${device.udid}). Pass force: true to delete it anyway.`,
+            )
+          }
+
+          const output = await deleteDevice(device, { signal: context.signal })
+          let changed = false
+          for (const [session, owned] of [...remembered.entries()]) {
+            if (owned !== device.udid) continue
+            remembered.delete(session)
+            changed = true
+          }
+          if (changed) {
+            await ctx.storage.set(SESSION_DEVICES, Object.fromEntries(remembered)).catch(() => {})
+          }
+          return ok(output, { udid: device.udid, name: device.name })
         } catch (cause) {
           return fail(cause)
         }

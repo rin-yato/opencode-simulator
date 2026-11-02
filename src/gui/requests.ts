@@ -10,6 +10,7 @@ import { createSignal } from "solid-js"
  * first booted device.
  */
 const STORAGE_KEY = "opencode-simulator.devices"
+const MAX_ENTRIES = 500
 
 const read = (): Readonly<Record<string, string>> => {
   try {
@@ -31,7 +32,13 @@ const [devices, setDevices] = createSignal<Readonly<Record<string, string>>>(rea
 export const requestDevice = (sessionKey: string, udid: string) => {
   setDevices((current) => {
     if (current[sessionKey] === udid) return current
-    const next = { ...current, [sessionKey]: udid }
+    const next: Record<string, string> = {}
+    for (const [key, value] of Object.entries(current)) {
+      if (key !== sessionKey) next[key] = value
+    }
+    next[sessionKey] = udid
+    const keys = Object.keys(next)
+    for (const key of keys.slice(0, Math.max(0, keys.length - MAX_ENTRIES))) delete next[key]
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
     } catch {}

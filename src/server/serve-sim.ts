@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs"
+import { readdir, rm, stat } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { run, runWithInput } from "./exec"
@@ -25,15 +26,59 @@ export function resolveServeSim(options: HubOptions = {}): string | undefined {
   return candidates.find((candidate): candidate is string => Boolean(candidate && existsSync(candidate)))
 }
 
+const isAlive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function serveSimPort(udid: string): number | undefined {
   try {
     const state = JSON.parse(
       readFileSync(join(tmpdir(), "serve-sim", `server-${udid}.json`), "utf8"),
-    ) as { port?: unknown }
-    return typeof state.port === "number" ? state.port : undefined
+    ) as { port?: unknown; pid?: unknown }
+    if (typeof state.port !== "number") return undefined
+    // serve-sim leaves its state file behind when a hub is killed; do not report
+    // a port that no process owns.
+    if (typeof state.pid === "number" && !isAlive(state.pid)) return undefined
+    return state.port
   } catch {
     return undefined
   }
+}
+
+/**
+ * Remove serve-sim state and log files whose process is gone, plus logs older
+ * than a week. Runs once when the server part loads.
+ */
+export async function cleanServeSimState(): Promise<void> {
+  const directory = join(tmpdir(), "serve-sim")
+  let entries: string[]
+  try {
+    entries = await readdir(directory)
+  } catch {
+    return
+  }
+  const now = Date.now()
+  await Promise.all(
+    entries.map(async (name) => {
+      const path = join(directory, name)
+      try {
+        if (name.startsWith("server-") && name.endsWith(".json")) {
+          const state = JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown }
+          if (typeof state.pid === "number" && !isAlive(state.pid)) await rm(path, { force: true })
+          return
+        }
+        if (name.endsWith(".log")) {
+          const info = await stat(path)
+          if (now - info.mtimeMs > 7 * 24 * 60 * 60 * 1_000) await rm(path, { force: true })
+        }
+      } catch {}
+    }),
+  )
 }
 
 const cli = (options: HubOptions, args: readonly string[], udid: string) => {

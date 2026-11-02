@@ -113,6 +113,23 @@ export async function resolveStartDevice(
   )
 }
 
+export async function deleteDevice(
+  device: Device,
+  options: { signal?: AbortSignal } = {},
+): Promise<string> {
+  if (device.state === "Booted") {
+    await run("xcrun", ["simctl", "shutdown", device.udid], {
+      signal: options.signal,
+      timeout: 60_000,
+    })
+  }
+  await run("xcrun", ["simctl", "delete", device.udid], {
+    signal: options.signal,
+    timeout: 60_000,
+  })
+  return `deleted ${device.name} (${device.udid})`
+}
+
 export async function bootDevice(
   device: Device,
   options: { signal?: AbortSignal } = {},

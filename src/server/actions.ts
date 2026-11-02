@@ -1,4 +1,4 @@
-import { mkdir, rm } from "node:fs/promises"
+import { mkdir, readdir, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { run, runWithInput } from "./exec"
@@ -205,12 +205,48 @@ export interface Screenshot {
   readonly height: number
 }
 
+const SCREENSHOT_RETENTION_MS = 24 * 60 * 60 * 1_000
+const SCREENSHOT_PRUNE_INTERVAL_MS = 5 * 60 * 1_000
+const SCREENSHOT_MAX_FILES = 200
+let lastScreenshotPrune = 0
+
+/**
+ * Screenshots are disposable: keep the last day, capped at 200 files. The
+ * scan is throttled so a burst of captures does not rescan the directory.
+ */
+async function pruneScreenshots(directory: string) {
+  const now = Date.now()
+  if (now - lastScreenshotPrune < SCREENSHOT_PRUNE_INTERVAL_MS) return
+  lastScreenshotPrune = now
+  try {
+    const entries = await readdir(directory)
+    const files: { path: string; mtime: number }[] = []
+    for (const name of entries) {
+      if (!name.endsWith(".jpg") && !name.endsWith(".png")) continue
+      const path = join(directory, name)
+      try {
+        const info = await stat(path)
+        files.push({ path, mtime: info.mtimeMs })
+      } catch {}
+    }
+    files.sort((a, b) => b.mtime - a.mtime)
+    await Promise.all(
+      files.map((file, index) => {
+        const expired = now - file.mtime > SCREENSHOT_RETENTION_MS
+        if (!expired && index < SCREENSHOT_MAX_FILES) return undefined
+        return rm(file.path, { force: true }).catch(() => {})
+      }),
+    )
+  } catch {}
+}
+
 export async function screenshot(
   udid: string,
   options: ActionOptions & { width?: number; format?: "jpeg" | "png" } = {},
 ): Promise<Screenshot> {
   const directory = join(tmpdir(), "opencode-simulator")
   await mkdir(directory, { recursive: true })
+  await pruneScreenshots(directory)
   const stamp = Date.now()
   const png = join(directory, `${udid}-${stamp}.png`)
   const format = options.format ?? "jpeg"

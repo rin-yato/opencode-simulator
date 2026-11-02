@@ -53,6 +53,11 @@ new device starts with a fresh install. If `sim_start` answers
 `note=this simulator is also used by another session`, create a copy before
 testing.
 
+When the parallel work is done, delete the copy with
+`sim_delete({ udid })`. It shuts the device down first and refuses if another
+session still owns it unless `force: true`. Do not delete the user's main
+simulator unless they ask.
+
 The panel is session-scoped. It appears in the strip of the session that
 called the tool, even if the user has switched to another session. It is also
 device-scoped: it streams the simulator `sim_start` was given, even when other
