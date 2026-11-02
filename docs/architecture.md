@@ -164,5 +164,4 @@ does not use `process.execPath`, `ELECTRON_RUN_AS_NODE`, or `npx`.
 
 Bun tests cover the pure pieces: device matching, the session-device cap and
 forget behavior, and the localStorage session cap. There is no automated test
-for serve-sim or Electron; those require a real macOS session and are listed in
-the pull-request checklist in [CONTRIBUTING.md](../CONTRIBUTING.md).
+for serve-sim or Electron; those require a real macOS session.
