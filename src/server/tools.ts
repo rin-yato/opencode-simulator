@@ -1,7 +1,7 @@
 import { basename } from "node:path"
 import { pathToFileURL } from "node:url"
 import { Plugin } from "@opencode/plugin"
-import { resolveDevice } from "./devices"
+import { bootDevice, listDevices, resolveDevice, resolveStartDevice } from "./devices"
 import { findRows, formatMatches, formatSnapshot, readSnapshot, resolveRow } from "./ax"
 import {
   launchApp,
@@ -16,9 +16,30 @@ import {
 } from "./actions"
 import { run } from "./exec"
 import { serveSimPort, type HubOptions } from "./serve-sim"
+import {
+  readSetting,
+  readSettings,
+  setSetting,
+  softwareKeyboard,
+  statusBar,
+  UI_SETTINGS,
+  type KeyboardState,
+  type StatusBarInput,
+  type UiSetting,
+} from "./settings"
 
 interface Common {
   readonly udid?: string
+}
+
+interface DevicesInput extends Common {
+  readonly all?: boolean
+}
+
+interface BootInput extends Common {}
+
+interface StartInput extends Common {
+  readonly app?: string
 }
 
 interface UiInput extends Common {
@@ -56,6 +77,17 @@ interface ButtonInput extends Common {
 interface RotateInput extends Common {
   readonly orientation: "portrait" | "portrait_upside_down" | "landscape_left" | "landscape_right"
 }
+
+interface SettingsInput extends Common {
+  readonly setting?: UiSetting
+  readonly value?: string
+}
+
+interface KeyboardInput extends Common {
+  readonly state?: KeyboardState
+}
+
+interface StatusBarToolInput extends Common, StatusBarInput {}
 
 interface ScreenshotInput extends Common {
   readonly width?: number
@@ -98,7 +130,11 @@ const ok = (content: string, metadata: Record<string, unknown> = {}) => ({
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-export async function registerTools(ctx: Plugin.Context, hub: HubOptions): Promise<void> {
+export async function registerTools(
+  ctx: Plugin.Context,
+  hub: HubOptions,
+  openPanel?: (udid: string) => Promise<boolean>,
+): Promise<void> {
   await ctx.tool.transform((editor) => {
     editor.namespace({
       name: "sim",
@@ -138,6 +174,131 @@ export async function registerTools(ctx: Plugin.Context, hub: HubOptions): Promi
             ].join("\n"),
             { udid: device.udid, app: snapshot.app, port },
           )
+        } catch (cause) {
+          return fail(cause)
+        }
+      },
+    })
+
+    editor.add({
+      name: "devices",
+      description:
+        "List simulators with state, runtime, and UDID. Use this before sim_boot or sim_start when you need to pick a device. Booted devices are listed first.",
+      input: {
+        type: "object",
+        properties: {
+          all: {
+            type: "boolean",
+            default: false,
+            description: "Include unavailable devices that cannot boot.",
+          },
+        },
+        additionalProperties: false,
+      },
+      options,
+      execute: async (raw, context) => {
+        try {
+          const input = raw as DevicesInput
+          const devices = (await listDevices({ signal: context.signal })).filter(
+            (device) => input.all || device.available,
+          )
+          devices.sort(
+            (a, b) =>
+              Number(b.state === "Booted") - Number(a.state === "Booted") ||
+              a.name.localeCompare(b.name) ||
+              a.udid.localeCompare(b.udid),
+          )
+          const lines = [`# ${devices.length} simulator(s)`, "# name\tstate\truntime\tudid"]
+          for (const device of devices) {
+            lines.push(`${device.name}\t${device.state}\t${device.runtime}\t${device.udid}`)
+          }
+          return ok(lines.join("\n"), { count: devices.length })
+        } catch (cause) {
+          return fail(cause)
+        }
+      },
+    })
+
+    editor.add({
+      name: "boot",
+      description:
+        "Boot a simulator by UDID or name, without opening Simulator.app. Defaults to the only booted device, or the only installed device. Use sim_start to also open the Simulator panel.",
+      input: {
+        type: "object",
+        properties: { udid },
+        additionalProperties: false,
+      },
+      options,
+      execute: async (raw, context) => {
+        try {
+          const input = raw as BootInput
+          const device = await resolveStartDevice(input.udid, { signal: context.signal })
+          const output = await bootDevice(device, { signal: context.signal })
+          return ok(output, { udid: device.udid, name: device.name })
+        } catch (cause) {
+          return fail(cause)
+        }
+      },
+    })
+
+    editor.add({
+      name: "start",
+      description:
+        "Start the simulator end to end: boot the device if needed, optionally launch an app, and open the Simulator panel in the current window. Use this when the user wants to see or interact with the simulator.",
+      input: {
+        type: "object",
+        properties: {
+          udid,
+          app: {
+            type: "string",
+            description: "Optional bundle id to launch after boot, e.g. com.melis.app.",
+          },
+        },
+        additionalProperties: false,
+      },
+      options,
+      execute: async (raw, context) => {
+        try {
+          const input = raw as StartInput
+          const device = await resolveStartDevice(input.udid, { signal: context.signal })
+          const boot = await bootDevice(device, { signal: context.signal })
+
+          let launched = ""
+          if (input.app) {
+            launched = await launchApp(device.udid, input.app, {
+              signal: context.signal,
+              terminate: false,
+            })
+          }
+
+          if (!openPanel) throw new Error("The Simulator window entry is not available.")
+          const opened = await openPanel(device.udid)
+
+          let port: number | undefined
+          if (opened) {
+            const deadline = Date.now() + 15_000
+            while (Date.now() < deadline) {
+              port = serveSimPort(device.udid)
+              if (port) break
+              await sleep(250)
+            }
+          }
+
+          const lines = [
+            boot,
+            ...(launched ? [`app=${input.app}`, launched] : []),
+            !opened
+              ? "panel=requested; if the Simulator tab does not appear, restart OpenCode once to load the updated window code."
+              : port
+                ? `panel=opened serve-sim=http://127.0.0.1:${port}`
+                : "panel=opened; serve-sim is still starting. Check the Simulator tab.",
+          ]
+          return ok(lines.join("\n"), {
+            udid: device.udid,
+            name: device.name,
+            port,
+            panel: opened,
+          })
         } catch (cause) {
           return fail(cause)
         }
@@ -389,6 +550,122 @@ export async function registerTools(ctx: Plugin.Context, hub: HubOptions): Promi
           const device = await resolveDevice(input.udid, { signal: context.signal })
           await rotate(device.udid, input.orientation, { ...hub, signal: context.signal })
           return ok(`rotated ${input.orientation}`, { udid: device.udid })
+        } catch (cause) {
+          return fail(cause)
+        }
+      },
+    })
+
+    editor.add({
+      name: "settings",
+      description:
+        "Read or change simulator-wide UI settings: appearance, text-size, reduce-motion, increase-contrast, reduce-transparency, color-filter, show-borders, voiceover, hardware-keyboard, liquid-glass. Call with no setting to list everything; with setting only to read one; with setting and value to change it.",
+      input: {
+        type: "object",
+        properties: {
+          udid,
+          setting: {
+            type: "string",
+            enum: [...UI_SETTINGS],
+            description: "Setting to read or change. Omit to list all settings.",
+          },
+          value: {
+            type: "string",
+            description:
+              "New value. Examples: dark, light, large, extra-large, on, off, grayscale, tinted. Omit to read the current value.",
+          },
+        },
+        additionalProperties: false,
+      },
+      options,
+      execute: async (raw, context) => {
+        try {
+          const input = raw as SettingsInput
+          const device = await resolveDevice(input.udid, { signal: context.signal })
+          if (!input.setting) {
+            const output = await readSettings(device.udid, { ...hub, signal: context.signal })
+            return ok(output, { udid: device.udid })
+          }
+          if (input.value === undefined) {
+            const output = await readSetting(device.udid, input.setting, {
+              ...hub,
+              signal: context.signal,
+            })
+            return ok(output, { udid: device.udid, setting: input.setting })
+          }
+          const output = await setSetting(device.udid, input.setting, input.value, {
+            ...hub,
+            signal: context.signal,
+          })
+          return ok(output, { udid: device.udid, setting: input.setting, value: input.value })
+        } catch (cause) {
+          return fail(cause)
+        }
+      },
+    })
+
+    editor.add({
+      name: "keyboard",
+      description:
+        "Show, hide, or toggle the on-screen software keyboard. Requires the Simulator panel to be open so serve-sim is running. Focus a text field first with sim_tap.",
+      input: {
+        type: "object",
+        properties: {
+          udid,
+          state: {
+            type: "string",
+            enum: ["show", "hide", "toggle"],
+            default: "toggle",
+            description: "show and hide are idempotent; toggle flips the current state.",
+          },
+        },
+        additionalProperties: false,
+      },
+      options,
+      execute: async (raw, context) => {
+        try {
+          const input = raw as KeyboardInput
+          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const output = await softwareKeyboard(device.udid, input.state ?? "toggle", {
+            ...hub,
+            signal: context.signal,
+          })
+          return ok(output, { udid: device.udid, state: input.state ?? "toggle" })
+        } catch (cause) {
+          return fail(cause)
+        }
+      },
+    })
+
+    editor.add({
+      name: "statusbar",
+      description:
+        "Override the simulator status bar for deterministic screenshots: time, battery, wifi/cellular bars, carrier. Call with no values to list current overrides, or clear: true to remove them.",
+      input: {
+        type: "object",
+        properties: {
+          udid,
+          clear: { type: "boolean", description: "Remove all status bar overrides." },
+          time: { type: "string", description: 'Fixed time, e.g. "9:41".' },
+          batteryState: { type: "string", enum: ["charging", "charged", "discharging"] },
+          batteryLevel: { type: "integer", minimum: 0, maximum: 100 },
+          wifiBars: { type: "integer", minimum: 0, maximum: 3 },
+          cellularBars: { type: "integer", minimum: 0, maximum: 4 },
+          dataNetwork: {
+            type: "string",
+            enum: ["hide", "wifi", "3g", "4g", "lte", "lte-a", "lte+", "5g", "5g+", "5g-uwb", "5g-uc"],
+          },
+          operatorName: { type: "string", description: "Carrier name; empty string clears it." },
+        },
+        additionalProperties: false,
+      },
+      options,
+      execute: async (raw, context) => {
+        try {
+          const input = raw as StatusBarToolInput
+          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const output = await statusBar(device.udid, input, { signal: context.signal })
+          return ok(output, { udid: device.udid })
         } catch (cause) {
           return fail(cause)
         }

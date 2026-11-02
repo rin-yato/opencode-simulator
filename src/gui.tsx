@@ -2,6 +2,7 @@ import { Command, MenuItem, Panel, Plugin, type PanelTab } from "@opencode/plugi
 import main from "./gui/main"
 import { SimulatorPanel } from "./gui/panel"
 import en from "./gui/i18n/en"
+import { SIMULATOR_RPC } from "./rpc"
 
 const definition = Plugin.define({
   os: ["macos"],
@@ -62,6 +63,36 @@ export default Plugin.define({
         if (session) ctx.layout.open(`${ctx.id}:device`, session)
       },
     }))
+
+    const client = ctx.client.rpc(SIMULATOR_RPC)
+    let stopped = false
+
+    const handleOpen = (event: { data?: { udid?: unknown } }) => {
+      const session = ctx.sessions.current() ?? ctx.sessions.list()[0]
+      if (!session) return
+      ctx.layout.open(`${ctx.id}:device`, session)
+      const udid = typeof event.data?.udid === "string" ? event.data.udid : ""
+      const location = session.location
+      void client.opened({ udid }, location ? { location } : undefined).catch(() => {})
+    }
+
+    // The RPC event stream drops when the server/plugin restarts. Re-subscribe
+    // so sim_start keeps working across reloads.
+    void (async () => {
+      while (!stopped && !ctx.signal.aborted) {
+        try {
+          for await (const event of client.events.subscribe("open", { signal: ctx.signal })) {
+            handleOpen(event)
+          }
+        } catch {}
+        if (stopped || ctx.signal.aborted) return
+        await new Promise((resolve) => setTimeout(resolve, 500))
+      }
+    })()
+
+    return () => {
+      stopped = true
+    }
   },
   main,
 })

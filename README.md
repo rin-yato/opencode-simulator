@@ -8,8 +8,8 @@ The plugin starts `serve-sim` on loopback and places its preview in a native
 the panel is the live stream and input surface.
 
 It also has a server part that registers a `sim` tool namespace with OpenCode:
-`status`, `ui`, `tap`, `scroll`, `type`, `button`, `rotate`, `screenshot`,
-`wait`, and `launch`. No MCP server is involved.
+device listing/boot/start, accessibility reads and input, settings, keyboard,
+status bar, screenshots, waits, and app launch. No MCP server is involved.
 
 `serve-sim` is run with the system `node`, not Electron. Its native capture
 addon is signed by Expo, and Electron's hardened runtime refuses to map a
@@ -56,7 +56,8 @@ plugin in every window and in the Electron main process.
 
 ## Use
 
-- Boot a simulator in Xcode or Simulator.app first.
+- Call `sim_start` to boot a device and open the panel, or boot one with
+  Xcode/Simulator.app or `sim_boot`.
 - Open the right side panel and choose **Simulator** from the `+` menu, or run
   **Open Simulator** from the command palette.
 - The panel shows the serve-sim preview for the booted device. It is
@@ -74,6 +75,9 @@ no MCP server and no extra config.
 
 | Tool | Use |
 |---|---|
+| `sim_devices` | List simulators, states, runtimes, and UDIDs |
+| `sim_boot` | Boot a device headlessly by UDID or name |
+| `sim_start` | Boot if needed, optionally launch an app, and open the Simulator panel |
 | `sim_status` | Device, app, screen size, AXe version, serve-sim port |
 | `sim_ui` | Compact action table; `find` for one control, `mode: "interactive"` for the next action |
 | `sim_tap` | Tap by `text`, `id`, `label`, `value`, or normalized `x`/`y` |
@@ -81,6 +85,9 @@ no MCP server and no extra config.
 | `sim_type` | Type into the focused field; `submit: true` presses Return |
 | `sim_button` | `home`, `lock`, `side-button`, `siri`, `apple-pay` |
 | `sim_rotate` | Portrait or landscape |
+| `sim_settings` | Read/change appearance, text size, contrast, motion, voiceover, keyboard mode |
+| `sim_keyboard` | Show, hide, or toggle the software keyboard |
+| `sim_statusbar` | Override or clear status bar time/battery/signal for screenshots |
 | `sim_screenshot` | Small JPEG (800px default) for visual checks |
 | `sim_wait` | Wait for text, return PASS/FAIL |
 | `sim_launch` | Terminate and relaunch an app by bundle id |
@@ -105,8 +112,12 @@ a compact text read is a few hundred.
 - `src/gui/hub.ts` spawns `serve-sim`, waits for `/readyz`, and reconnects the
   pane when the hub restarts on a new port.
 - `src/gui/panel.tsx` renders the embed and its retry state.
-- `src/index.ts` is the server part. It registers the `sim` tools with
-  `ctx.tool.transform`.
+- `src/index.ts` is the server part. It registers the `sim` tools and the
+  `open` RPC used by `sim_start`.
+- `src/rpc.ts` defines that event and the `opened` acknowledgement.
+- `src/gui.tsx` listens for `open` and opens the panel tab.
+- `src/server/devices.ts` lists, matches, and boots devices.
+- `src/server/settings.ts` handles UI settings, keyboard, and status bar.
 - `src/server/ax.ts` reads and compacts the accessibility tree.
 - `src/server/actions.ts` taps, scrolls, types, presses buttons, and captures.
 - `src/server/serve-sim.ts` resolves the hub CLI and falls back to its gestures.
@@ -122,6 +133,8 @@ bun run typecheck
 
 Server tool code is loaded from `src/`; after changing it, touch
 `~/.config/opencode/opencode.jsonc` to force OpenCode to reload the plugin.
+Main-process GUI code reloads with it. Window-entry code (`src/gui.tsx`,
+`src/gui/panel.tsx`) needs an OpenCode restart or window reload.
 
 ## Uninstall
 
@@ -131,6 +144,11 @@ behind after a crash, the next plugin start reaps it by the stored pid/port.
 ## Notes
 
 - This is desktop-only and macOS-only. The plugin declares `os: ["macos"]`.
+- serve-sim opens Simulator.app after boot. The hub hides it once the stream is
+  ready so the panel is the only visible copy; capture and input keep working.
+  Set `options.showSimulator: true` (or `OPENCODE_SIMULATOR_SHOW_SIMULATOR=1`)
+  to keep the window visible. The first hide may ask for Automation access to
+  System Events.
 - serve-sim binds `127.0.0.1`; it is never exposed on the network.
 - Do not spawn serve-sim with `process.execPath` / `ELECTRON_RUN_AS_NODE`; the
   native addon will fail to load under Electron's hardened runtime.

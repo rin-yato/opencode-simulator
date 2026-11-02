@@ -2,7 +2,31 @@
 
 Date: 2026-11-02
 Repo: `/Users/yato/Documents/dev/opencode-simulator`
-Status: working local plugin; GUI panel + agent tools are implemented and tested.
+Status: working local plugin; 16 agent tools, headless-friendly GUI panel.
+Working tree: dirty, not committed.
+
+## Where we stopped
+
+The new device tools are implemented and `sim.devices` / `sim.boot` work.
+`sim.start` boots, optionally launches an app, emits an RPC `open` event, and
+waits for an `opened` ack from the window entry. The event/ack path worked once
+(`panel=opened`, 139ms), but it lives in `src/gui.tsx`, which does **not** reload
+with a config touch. After the last plugin reload the old renderer lost the
+subscription; a re-subscribe loop is now in the code but has not been installed
+in the running window.
+
+**Next action:** restart OpenCode Desktop once, then call:
+
+```ts
+sim_start({ udid: "iPhone 17 Pro", app: "com.melis.app" })
+```
+
+Expect `panel=opened serve-sim=http://127.0.0.1:<port>`. If it still returns
+`panel=requested`, replace the server→window RPC bridge with a main-process
+IPC + loopback HTTP bridge (the current approach is documented below).
+
+The running app is left with iPhone 17 Pro booted, Melis running, and
+Simulator.app hidden by the hub.
 
 ## What this is
 
@@ -23,7 +47,7 @@ machine and does not support remote OpenCode servers.
 - AXe `axe` 1.8.0 at `/opt/homebrew/bin/axe`.
 - iOS 26.5 simulator: iPhone 17 Pro, UDID
   `1F177DA7-EDA4-4A7C-9466-CF24599B48F5`.
-- Test app: Melis (`com.melis.app`), currently on the Orders screen.
+- Test app: Melis (`com.melis.app`), currently running.
 
 ## Important paths
 
@@ -37,31 +61,49 @@ machine and does not support remote OpenCode servers.
 
 ## Architecture
 
-- `src/index.ts` — server plugin entry; registers tools with
-  `ctx.tool.transform`.
-- `src/server/tools.ts` — the 10 `sim` tool definitions and JSON schemas.
+- `src/index.ts` — server plugin entry; registers the RPC definition and the
+  tools with `ctx.tool.transform`.
+- `src/server/tools.ts` — the 16 `sim` tool definitions and JSON schemas.
 - `src/server/ax.ts` — reads `axe describe-ui`, compacts it to a small action
-  table, matches rows, and formats output.
+  table, matches rows, and formats output. Falls back to serve-sim's
+  `/helper/<udid>/ax` endpoint if AXe is missing.
 - `src/server/actions.ts` — tap, swipe/scroll, type, button, rotate,
   screenshot, launch.
-- `src/server/devices.ts` — resolves a UDID or name; refuses ambiguous booted
-  devices.
+- `src/server/settings.ts` — simulator UI settings, software keyboard, and
+  status bar overrides.
+- `src/server/devices.ts` — lists, matches, and boots devices; refuses
+  ambiguous booted devices.
 - `src/server/serve-sim.ts` — resolves the hub CLI, reads its state file, and
   falls back to serve-sim gestures/input.
 - `src/server/exec.ts` — `execFile`/stdin helpers.
+- `src/rpc.ts` — shared RPC definition: `open` event from the server tool to the
+  window entry, and an `opened` method as the acknowledgement.
 - `src/gui.tsx`, `src/gui/main.ts`, `src/gui/hub.ts`, `src/gui/panel.tsx` — the
-  existing GUI panel and serve-sim lifecycle.
+  existing GUI panel and serve-sim lifecycle. `src/gui.tsx` listens for `open`
+  and calls `ctx.layout.open`.
 
 Backends, in order:
 
 1. `axe` for accessibility reads, selector taps, swipes, typing, keys.
-2. serve-sim for preview, buttons, rotation, and fallback input.
-3. `xcrun simctl` for device lifecycle and screenshots.
+2. serve-sim for preview, buttons, rotation, fallback input, UI settings, and
+   the software keyboard.
+3. `xcrun simctl` for device lifecycle, status bar overrides, and screenshots.
+
+The GUI hub hides Simulator.app once the stream is ready. serve-sim always
+opens it after boot, so this is a one-time hide; later `open -g` calls do not
+un-hide it. Capture and input work while hidden. Set
+`options.showSimulator: true` or `OPENCODE_SIMULATOR_SHOW_SIMULATOR=1` to opt
+out.
 
 ## Tools
 
 Namespace `sim`; Code Mode sees them as `tools.sim.<name>`.
 
+- `sim.devices` — list simulators with state, runtime, and UDID.
+- `sim.boot` — boot a device headlessly; defaults to the only booted/installed
+  device.
+- `sim.start` — boot if needed, optionally launch an app, then open the
+  Simulator panel and wait for serve-sim.
 - `sim.status` — device, app, screen, axe version, serve-sim port.
 - `sim.ui` — compact table; `find`, `mode: visible|interactive|all`, `max`.
 - `sim.tap` — by `text`, `id`, `label`, `value`, or normalized `x`/`y`.
@@ -69,6 +111,10 @@ Namespace `sim`; Code Mode sees them as `tools.sim.<name>`.
 - `sim.type` — text; `submit` presses Return.
 - `sim.button` — home, lock, side-button, siri, apple-pay.
 - `sim.rotate` — portrait/landscape via serve-sim.
+- `sim.settings` — read/change appearance, text-size, reduce-motion, contrast,
+  color-filter, voiceover, hardware keyboard, liquid glass.
+- `sim.keyboard` — `show`/`hide`/`toggle` the software keyboard.
+- `sim.statusbar` — override/clear time, battery, wifi/cellular bars, carrier.
 - `sim.screenshot` — 800px JPEG by default; returns a path.
 - `sim.wait` — poll for text; PASS/FAIL.
 - `sim.launch` — terminate + relaunch by bundle id.
@@ -97,9 +143,31 @@ The old Melis `use-simulator` skill's `ui.py` compacting logic was ported into
 - Screenshot produced a readable JPEG.
 - `sim.launch("com.melis.app")` relaunched the app.
 - `sim.button("home")` reached SpringBoard.
+- `sim.devices` lists all 11 installed simulators with clean runtime strings.
+- `sim.boot` booted `iPhone 17e` from shutdown in ~33s, then it was shut down
+  again to clean up. `sim.boot` on an already-booted device is a no-op.
+- `sim.start` boots and launches the app. The RPC `open` event and `opened`
+  ack worked once after a renderer reload (`panel=opened`, 139ms). After a
+  plugin reload the old renderer lost the subscription; `src/gui.tsx` now
+  re-subscribes in a loop, but the window entry still needs one restart to
+  install it. Until then `sim.start` returns `panel=requested`.
+- `sim.settings()` lists all settings; setting `appearance=dark` changed the
+  live screen, and reading it back returned `dark`.
+- `sim.statusbar()` overrode time/battery/signal, listed the overrides, and
+  cleared them.
+- `sim.keyboard` show/hide/toggle worked against a focused field. `show`/`hide`
+  are idempotent; visibility is detected from the AX keyboard keys.
+- Headless verified: with Simulator.app hidden, native capture, screenshots,
+  AXe taps, typing, software keyboard, and appearance changes all work.
+- serve-sim has an undocumented `GET /helper/<udid>/ax` endpoint and a
+  `/foreground` endpoint. Its tree is smaller (19 nodes vs axe's 83 on Orders)
+  and slower (~0.8–1.1s vs ~0.4s), so axe remains the primary reader.
 - `sim.rotate("landscape_left")` returned success, but Melis stayed portrait.
   Likely the app is portrait-only; rotation has not been verified against
   SpringBoard or a rotatable app.
+- Auto-hide verified end to end: unhid Simulator, killed serve-sim, the hub
+  restarted on a new port, and Simulator became hidden while the stream kept
+  running.
 
 ## Gotchas
 
@@ -111,12 +179,25 @@ The old Melis `use-simulator` skill's `ui.py` compacting logic was ported into
 - **`axe button` needs Simulator.app frontmost.** Without focus it exits 0 and
   does nothing. `sim.button` prefers serve-sim, then activates Simulator before
   falling back to AXe.
-- **serve-sim only runs while the panel is active** (the GUI hub owns it).
-  Tools that only use AXe/simctl still work with the panel closed. `sim.rotate`
-  currently requires serve-sim.
+- **serve-sim is owned by the GUI hub.** It starts when the panel first
+  registers and keeps running after the panel view closes; only plugin cleanup
+  or window close stops it. So `sim.rotate`, `sim.keyboard`, and button
+  fallbacks work with the panel closed once it has started at least once.
+  `sim.settings` and `sim.statusbar` work even without it because they call the
+  serve-sim CLI/simctl directly.
+- **serve-sim always opens Simulator.app after boot.** The hub hides it after
+  `/readyz`; do not quit Simulator.app, since quitting it shuts down the booted
+  device. First hide may prompt for Automation access to System Events.
+- **`sim.keyboard` needs a focused text field** and the panel open. It detects
+  visibility from the AX keyboard keys, so `show`/`hide` are idempotent.
 - **After changing server tool code, touch the global `opencode.jsonc`** to
-  force a plugin reload. GUI bundle changes reload on build; server source
-  changes may stay cached.
+  force a plugin reload. GUI bundle changes reload the main process, but the
+  **window entry does not reload** until OpenCode restarts or the window
+  reloads. Changes to `src/gui.tsx` or `src/gui/panel.tsx` need a restart.
+- **`sim.start` needs the window entry.** It emits the `open` RPC event and
+  waits up to 3s for the `opened` ack. The entry re-subscribes when the event
+  stream drops, but after changing `src/gui.tsx` you must restart OpenCode once
+  to install it. Until then the tool returns `panel=requested`.
 - **`sim.screenshot` returns a file path**; in Code Mode the image is not
   auto-attached, so read the JPEG path.
 - **Transient empty AX ids right after launch.** Re-read `sim.ui` once.
@@ -139,19 +220,25 @@ bun run dev            # GUI watch mode
 The server part is loaded from `src/`; it is not bundled. After editing
 `src/server/*` or `src/index.ts`, touch
 `/Users/yato/Documents/dev/dotfiles/config/opencode/opencode.jsonc`.
+Window-entry changes (`src/gui.tsx`, `src/gui/panel.tsx`) need an OpenCode
+restart; touching config only reloads the server and main process.
 
 ## Next steps
 
-1. Verify `sim.rotate` on SpringBoard or a rotatable app; otherwise remove or
+1. Restart OpenCode once and verify `sim.start` opens and focuses the Simulator
+   panel, then confirm the `opened` ack path.
+2. Verify `sim.rotate` on SpringBoard or a rotatable app; otherwise remove or
    document it as serve-sim-only.
-2. Rewrite the Melis `use-simulator` skill to call `sim_*` tools and delete
+3. Decide whether `sim.start` should target one device (`--single-device`) when
+   several are already booted; today the hub serves every booted device.
+4. Rewrite the Melis `use-simulator` skill to call `sim_*` tools and delete
    `ui.py`/`scroll.sh`/`shot.sh`.
-3. Consider `sim.batch` for multi-step flows in one tool call.
-4. Consider lazily starting serve-sim from the server part so `sim.rotate` and
-   button fallbacks work with the panel closed.
-5. Consider returning the screenshot as attached image content reliably; today
+5. Consider `sim.batch` for multi-step flows in one tool call.
+6. Consider lazily starting serve-sim from the server part so `sim.rotate`,
+   `sim.keyboard`, and button fallbacks work with the panel closed.
+7. Consider returning the screenshot as attached image content reliably; today
    Code Mode only surfaces the text path.
-6. Add a small smoke-test script for `status`/`ui`/`tap`/`wait`.
+8. Add a small smoke-test script for `status`/`ui`/`tap`/`wait`.
 
 ## Fresh-session checklist
 
@@ -159,7 +246,10 @@ The server part is loaded from `src/`; it is not bundled. After editing
 2. `bun run typecheck && bun run build`
 3. Confirm the global plugin entry points at
    `/Users/yato/Documents/dev/opencode-simulator`.
-4. Boot a simulator; open the **Simulator** panel.
+4. Use `sim_start` to boot a device and open the **Simulator** panel, or open
+   it manually.
 5. Call `sim.status`; expect the device, app, screen, and a serve-sim URL.
-6. If tools are missing after a code edit, touch the global config and retry.
-7. Do not use a remote debugging port unless actively needed.
+6. If GUI window changes are missing, restart OpenCode. Touching config only
+   reloads the server and main process.
+7. If tools are missing after a code edit, touch the global config and retry.
+8. Do not use a remote debugging port unless actively needed.

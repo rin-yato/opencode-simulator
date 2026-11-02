@@ -1,4 +1,4 @@
-import { spawn, execFileSync, type ChildProcess } from "node:child_process"
+import { spawn, execFile, execFileSync, type ChildProcess } from "node:child_process"
 import { existsSync } from "node:fs"
 import { createServer } from "node:net"
 import { homedir } from "node:os"
@@ -92,6 +92,32 @@ const commandLine = (pid: number) => {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
+const HIDE_SIMULATOR_SCRIPT =
+  'tell application "System Events" to set visible of process "Simulator" to false'
+
+/**
+ * serve-sim opens Simulator.app after booting a device. Hide it once the stream
+ * is ready so the panel is the only visible copy; the device, capture, and HID
+ * input keep working while the app is hidden.
+ */
+const hideSimulatorWindow = (ctx: MainContext, attempt = 0): void => {
+  if (process.platform !== "darwin") return
+  execFile(
+    "osascript",
+    ["-e", HIDE_SIMULATOR_SCRIPT],
+    { timeout: 5_000, encoding: "utf8" },
+    (error, _stdout, stderr) => {
+      if (!error) return
+      if (attempt < 2) {
+        setTimeout(() => hideSimulatorWindow(ctx, attempt + 1), 1_500)
+        return
+      }
+      ctx.log.write("warn", "Could not hide the Simulator window", {
+        error: stderr.trim() || String(error),
+      })
+    },
+  )
+}
 
 async function waitForReady(url: string, signal: AbortSignal) {
   const deadline = Date.now() + READY_TIMEOUT_MS
@@ -126,6 +152,8 @@ export function createHubManager(ctx: MainContext): HubManager {
   const explicitCli =
     process.env.OPENCODE_SIMULATOR_HUB ??
     (typeof ctx.options.hubCli === "string" ? ctx.options.hubCli : undefined)
+  const keepSimulatorVisible =
+    process.env.OPENCODE_SIMULATOR_SHOW_SIMULATOR === "1" || ctx.options.showSimulator === true
 
   let stopped = false
   let starting: Promise<{ readonly url: string }> | null = null
@@ -223,6 +251,7 @@ export function createHubManager(ctx: MainContext): HubManager {
       throw cause
     }
     currentUrl = url
+    if (!keepSimulatorVisible) hideSimulatorWindow(ctx)
     for (const listener of startedListeners) listener(url)
     return { url }
   }

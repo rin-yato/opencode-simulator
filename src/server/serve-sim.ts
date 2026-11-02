@@ -69,6 +69,24 @@ export async function serveSimRotate(
   await run(command, args, { signal: options.signal })
 }
 
+export async function serveSimUi(
+  udid: string,
+  args: readonly string[],
+  options: HubOptions & { signal?: AbortSignal } = {},
+): Promise<string> {
+  const { command, args: cliArgs } = cli(options, ["ui", ...args], udid)
+  const result = await run(command, cliArgs, { signal: options.signal })
+  return result.stdout.trim()
+}
+
+export async function serveSimSoftwareKeyboard(
+  udid: string,
+  options: HubOptions & { signal?: AbortSignal } = {},
+): Promise<void> {
+  const { command, args } = cli(options, ["software-keyboard"], udid)
+  await run(command, args, { signal: options.signal })
+}
+
 export async function serveSimGesture(
   udid: string,
   events: ReadonlyArray<Record<string, unknown>>,
