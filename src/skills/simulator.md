@@ -27,10 +27,10 @@ Tool names below are the agent-facing aliases. In Code Mode they are
    `panel=...` and the serve-sim URL.
 3. `sim_status` — confirm device, app, screen size, AXe, and serve-sim.
 
-`udid` accepts an exact device name (for example `iPhone 17 Pro`) or a UDID. It
-never fuzzy-matches, so `iPhone 17 Pro` will not pick `iPhone 17 Pro 2`.
-Every tool remembers the device this session started: after
-`sim_start({ udid: "iPhone 17e" })`, `sim_ui()` and `sim_tap()` default to
+`udid` accepts a UDID, an exact device name, or a unique name fragment.
+Ambiguous fragments fail instead of guessing, so `iPhone 17` will not silently
+pick one of two copies. Every tool remembers the device this session started:
+after `sim_start({ udid: "iPhone 17e" })`, `sim_ui()` and `sim_tap()` default to
 17e even if other simulators are booted. Pass `udid` only to target another
 device. `sim_boot` boots without opening the panel. `sim_start` is the normal
 entry.

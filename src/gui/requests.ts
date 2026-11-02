@@ -1,22 +1,22 @@
 import { createSignal } from "solid-js"
 
 /**
- * The simulator each session asked to see. `sim.start` fills this in before it
- * opens the tab, so the panel mounts straight onto the booted device instead of
- * letting serve-sim pick whichever simulator booted first.
+ * The simulator each session asked to see. `sim_start` fills this in before it
+ * opens the tab, so the panel mounts onto the booted device instead of letting
+ * serve-sim pick whichever simulator booted first.
  *
  * Keyed by `MountedSession.key`, which survives routing and tab close. Kept in
- * localStorage too, so a window or plugin reload does not fall back to the
- * first booted device.
+ * localStorage too, so a window or plugin reload restores the same device.
  */
-const STORAGE_KEY = "opencode-simulator.devices"
-const MAX_ENTRIES = 500
+
+export const STORAGE_KEY = "opencode-simulator.devices"
+export const MAX_ENTRIES = 500
 
 const read = (): Readonly<Record<string, string>> => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     const parsed = raw ? (JSON.parse(raw) as unknown) : undefined
-    if (!parsed || typeof parsed !== "object") return {}
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {}
     const devices: Record<string, string> = {}
     for (const [key, value] of Object.entries(parsed)) {
       if (typeof value === "string" && value) devices[key] = value
@@ -27,18 +27,29 @@ const read = (): Readonly<Record<string, string>> => {
   }
 }
 
+/** Add or move a session entry, dropping the oldest when the cap is exceeded. */
+export const upsertDevice = (
+  devices: Readonly<Record<string, string>>,
+  sessionKey: string,
+  udid: string,
+  max = MAX_ENTRIES,
+): Record<string, string> => {
+  const next: Record<string, string> = {}
+  for (const [key, value] of Object.entries(devices)) {
+    if (key !== sessionKey) next[key] = value
+  }
+  next[sessionKey] = udid
+  const keys = Object.keys(next)
+  for (const key of keys.slice(0, Math.max(0, keys.length - max))) delete next[key]
+  return next
+}
+
 const [devices, setDevices] = createSignal<Readonly<Record<string, string>>>(read())
 
 export const requestDevice = (sessionKey: string, udid: string) => {
   setDevices((current) => {
     if (current[sessionKey] === udid) return current
-    const next: Record<string, string> = {}
-    for (const [key, value] of Object.entries(current)) {
-      if (key !== sessionKey) next[key] = value
-    }
-    next[sessionKey] = udid
-    const keys = Object.keys(next)
-    for (const key of keys.slice(0, Math.max(0, keys.length - MAX_ENTRIES))) delete next[key]
+    const next = upsertDevice(current, sessionKey, udid)
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
     } catch {}

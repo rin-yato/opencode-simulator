@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { Plugin, Skill } from "@opencode/plugin"
 import { SIMULATOR_RPC } from "./rpc"
-import { registerTools } from "./server/tools"
+import { registerTools } from "./server/tools/index"
 
 const OPEN_TIMEOUT_MS = 8_000
 
@@ -63,9 +63,7 @@ export default Plugin.define({
 
         waiters.set(request, finish)
         timer = setTimeout(() => finish(false), OPEN_TIMEOUT_MS)
-        void rpc.events
-          .emit("open", { request, sessionID, udid })
-          .catch(() => finish(false))
+        void rpc.events.emit("open", { request, sessionID, udid }).catch(() => finish(false))
       })
 
     await registerTools(ctx, { hubCli: ctx.options.hubCli }, openPanel)

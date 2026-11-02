@@ -4,7 +4,12 @@ export interface Device {
   readonly udid: string
   readonly name: string
   readonly state: string
+  /** Human-readable runtime, for example "iOS 26.5". */
   readonly runtime: string
+  /** Runtime identifier used by `simctl create`. */
+  readonly runtimeId: string
+  /** Device-type identifier used by `simctl create`. */
+  readonly deviceType: string
   readonly available: boolean
 }
 
@@ -20,24 +25,34 @@ interface RawList {
   devices?: Record<string, RawDevice[]>
 }
 
-export async function listDevices(options: { signal?: AbortSignal } = {}): Promise<Device[]> {
+export interface CommandOptions {
+  readonly signal?: AbortSignal
+}
+
+/** "com.apple.CoreSimulator.SimRuntime.iOS-26-5" -> "iOS 26.5" */
+const runtimeLabel = (identifier: string): string => {
+  const short = identifier.split(".").pop() ?? identifier
+  const match = /^([a-zA-Z]+)-(\d+)-(\d+)$/.exec(short)
+  return match ? `${match[1]} ${match[2]}.${match[3]}` : short.replaceAll("-", " ")
+}
+
+export async function listDevices(options: CommandOptions = {}): Promise<Device[]> {
   const { stdout } = await run("xcrun", ["simctl", "list", "devices", "-j"], {
     signal: options.signal,
     timeout: 15_000,
   })
   const parsed = JSON.parse(stdout) as RawList
   const devices: Device[] = []
-  for (const [runtime, entries] of Object.entries(parsed.devices ?? {})) {
-    const short = runtime.split(".").pop() ?? runtime
-    const match = /^([a-zA-Z]+)-(\d+)-(\d+)$/.exec(short)
-    const version = match ? `${match[1]} ${match[2]}.${match[3]}` : short.replaceAll("-", " ")
+  for (const [runtimeId, entries] of Object.entries(parsed.devices ?? {})) {
     for (const entry of entries ?? []) {
       if (!entry.udid || !entry.name) continue
       devices.push({
         udid: entry.udid,
         name: entry.name,
         state: entry.state ?? "Unknown",
-        runtime: version,
+        runtime: runtimeLabel(runtimeId),
+        runtimeId,
+        deviceType: entry.deviceTypeIdentifier ?? "",
         available: entry.isAvailable !== false,
       })
     }
@@ -47,9 +62,14 @@ export async function listDevices(options: { signal?: AbortSignal } = {}): Promi
 
 const describe = (device: Device) => `${device.name} (${device.udid}) [${device.state}]`
 
-function matchDevice(devices: readonly Device[], wanted: string): Device {
+/**
+ * Resolve a UDID, an exact name, or a unique name fragment. Ambiguous names fail
+ * instead of guessing, so `iPhone 17 Pro` never silently selects a copy.
+ */
+export function matchDevice(devices: readonly Device[], wanted: string): Device {
   const exact = devices.find((device) => device.udid === wanted)
   if (exact) return exact
+
   const byName = devices.filter((device) => device.name === wanted)
   if (byName.length === 1) return byName[0]!
   if (byName.length > 1) {
@@ -57,18 +77,28 @@ function matchDevice(devices: readonly Device[], wanted: string): Device {
       `Multiple simulators are named "${wanted}": ${byName.map((device) => device.udid).join(", ")}. Pass a UDID.`,
     )
   }
+
   const partial = devices.filter((device) => device.name.includes(wanted))
   if (partial.length === 1) return partial[0]!
+  if (partial.length > 1) {
+    throw new Error(
+      `"${wanted}" matches multiple simulators: ${partial.map(describe).join(", ")}. Pass a UDID.`,
+    )
+  }
   throw new Error(
     `No simulator matches "${wanted}". Booted: ${
-      devices.filter((device) => device.state === "Booted").map(describe).join(", ") || "none"
+      devices
+        .filter((device) => device.state === "Booted")
+        .map(describe)
+        .join(", ") || "none"
     }.`,
   )
 }
 
+/** Resolve a device for an inspection or input tool. It must already be booted. */
 export async function resolveDevice(
   requested?: string,
-  options: { signal?: AbortSignal } = {},
+  options: CommandOptions = {},
 ): Promise<Device> {
   const devices = await listDevices(options)
   const wanted = requested?.trim()
@@ -77,7 +107,7 @@ export async function resolveDevice(
   const booted = devices.filter((device) => device.state === "Booted")
   if (booted.length === 1) return booted[0]!
   if (booted.length === 0) {
-    throw new Error("No simulator is booted. Boot one with Simulator.app or `xcrun simctl boot <udid>`.")
+    throw new Error("No simulator is booted. Boot one with sim_start or sim_boot.")
   }
   throw new Error(
     `Multiple simulators are booted: ${booted.map(describe).join(", ")}. Pass a udid to choose one.`,
@@ -85,12 +115,13 @@ export async function resolveDevice(
 }
 
 /**
- * The device a start/boot request should use. Prefers an explicit name/UDID,
- * then the only booted device, then the only installed device.
+ * Resolve a device for a start/boot request. Unlike `resolveDevice`, this may
+ * return a shut-down device so the caller can boot it. Prefers an explicit
+ * name/UDID, then the only booted device, then the only installed device.
  */
 export async function resolveStartDevice(
   requested?: string,
-  options: { signal?: AbortSignal } = {},
+  options: CommandOptions = {},
 ): Promise<Device> {
   const devices = await listDevices(options)
   const wanted = requested?.trim()
@@ -113,27 +144,7 @@ export async function resolveStartDevice(
   )
 }
 
-export async function deleteDevice(
-  device: Device,
-  options: { signal?: AbortSignal } = {},
-): Promise<string> {
-  if (device.state === "Booted") {
-    await run("xcrun", ["simctl", "shutdown", device.udid], {
-      signal: options.signal,
-      timeout: 60_000,
-    })
-  }
-  await run("xcrun", ["simctl", "delete", device.udid], {
-    signal: options.signal,
-    timeout: 60_000,
-  })
-  return `deleted ${device.name} (${device.udid})`
-}
-
-export async function bootDevice(
-  device: Device,
-  options: { signal?: AbortSignal } = {},
-): Promise<string> {
+export async function bootDevice(device: Device, options: CommandOptions = {}): Promise<string> {
   if (device.state === "Booted") return `already booted ${device.name} (${device.udid})`
 
   try {
@@ -154,6 +165,20 @@ export async function bootDevice(
   return `booted ${device.name} (${device.udid})`
 }
 
+export async function deleteDevice(device: Device, options: CommandOptions = {}): Promise<string> {
+  if (device.state === "Booted") {
+    await run("xcrun", ["simctl", "shutdown", device.udid], {
+      signal: options.signal,
+      timeout: 60_000,
+    })
+  }
+  await run("xcrun", ["simctl", "delete", device.udid], {
+    signal: options.signal,
+    timeout: 60_000,
+  })
+  return `deleted ${device.name} (${device.udid})`
+}
+
 /**
  * Create a clean simulator with the same device type and runtime as `source`.
  * The source is left alone, so it can stay booted while the copy runs.
@@ -161,31 +186,25 @@ export async function bootDevice(
 export async function createDeviceFrom(
   source: Device,
   name: string,
-  options: { signal?: AbortSignal } = {},
-): Promise<{ readonly udid: string; readonly name: string }> {
-  const { stdout } = await run("xcrun", ["simctl", "list", "devices", "-j"], {
-    signal: options.signal,
-    timeout: 15_000,
-  })
-  const parsed = JSON.parse(stdout) as RawList
-  let deviceType: string | undefined
-  let runtime: string | undefined
-  for (const [key, entries] of Object.entries(parsed.devices ?? {})) {
-    const entry = (entries ?? []).find((candidate) => candidate.udid === source.udid)
-    if (!entry) continue
-    deviceType = entry.deviceTypeIdentifier
-    runtime = key
-    break
-  }
-  if (!deviceType || !runtime) {
+  options: CommandOptions = {},
+): Promise<Device> {
+  if (!source.deviceType || !source.runtimeId) {
     throw new Error(`Could not read the device type or runtime for ${source.name}.`)
   }
-
-  const created = await run("xcrun", ["simctl", "create", name, deviceType, runtime], {
-    signal: options.signal,
-    timeout: 60_000,
-  })
-  return { udid: created.stdout.trim(), name }
+  const { stdout } = await run(
+    "xcrun",
+    ["simctl", "create", name, source.deviceType, source.runtimeId],
+    { signal: options.signal, timeout: 60_000 },
+  )
+  return {
+    udid: stdout.trim(),
+    name,
+    state: "Shutdown",
+    runtime: source.runtime,
+    runtimeId: source.runtimeId,
+    deviceType: source.deviceType,
+    available: true,
+  }
 }
 
 /**
@@ -196,7 +215,7 @@ export async function installAppFrom(
   target: string,
   source: string,
   bundleId: string,
-  options: { signal?: AbortSignal } = {},
+  options: CommandOptions = {},
 ): Promise<string> {
   const container = await run("xcrun", ["simctl", "get_app_container", source, bundleId, "app"], {
     signal: options.signal,

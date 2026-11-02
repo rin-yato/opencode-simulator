@@ -1,8 +1,5 @@
-import { mkdir, readdir, rm, stat } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import { run, runWithInput } from "./exec"
-import { readSnapshot, type UiRow } from "./ax"
+import { readSnapshot, type UiRow } from "./accessibility"
 import {
   serveSimButton,
   serveSimRotate,
@@ -16,28 +13,54 @@ export interface ActionOptions extends HubOptions {
   readonly signal?: AbortSignal
 }
 
+/**
+ * Try AXe first and fall back to serve-sim. AXe is faster and handles hardware
+ * input better, but it is optional and can be unavailable while a simulator is
+ * still starting. If both fail, report the AXe error: it is the primary path.
+ */
+async function withServeSimFallback(
+  primary: () => Promise<void>,
+  fallback: () => Promise<void>,
+): Promise<void> {
+  try {
+    await primary()
+  } catch (cause) {
+    try {
+      await fallback()
+    } catch {
+      throw cause instanceof Error ? cause : new Error(String(cause))
+    }
+  }
+}
+
+export async function screenSize(
+  udid: string,
+  signal?: AbortSignal,
+): Promise<{ width: number; height: number }> {
+  const snapshot = await readSnapshot(udid, { signal })
+  if (!snapshot.screen) {
+    throw new Error("Could not determine the simulator screen size from the accessibility tree.")
+  }
+  return snapshot.screen
+}
+
 export async function tapPoint(
   udid: string,
   x: number,
   y: number,
   options: ActionOptions = {},
 ): Promise<void> {
-  let primaryError: unknown
-  try {
-    await run("axe", ["tap", "-x", String(x), "-y", String(y), "--udid", udid], {
-      signal: options.signal,
-      timeout: 15_000,
-    })
-    return
-  } catch (cause) {
-    primaryError = cause
-  }
-  try {
-    const screen = await screenSize(udid, options.signal)
-    await serveSimTap(udid, x / screen.width, y / screen.height, options)
-  } catch {
-    throw primaryError instanceof Error ? primaryError : new Error(String(primaryError))
-  }
+  await withServeSimFallback(
+    () =>
+      run("axe", ["tap", "-x", String(x), "-y", String(y), "--udid", udid], {
+        signal: options.signal,
+        timeout: 15_000,
+      }).then(() => undefined),
+    async () => {
+      const screen = await screenSize(udid, options.signal)
+      await serveSimTap(udid, x / screen.width, y / screen.height, options)
+    },
+  )
 }
 
 export async function tapSelector(
@@ -52,9 +75,8 @@ export async function tapSelector(
   if (selector.elementType) args.push("--element-type", selector.elementType)
   if (selector.wait && selector.wait > 0) args.push("--wait-timeout", String(selector.wait))
   args.push("--udid", udid)
-  await run("axe", args, { signal: options.signal, timeout: 15_000 + (selector.wait ?? 0) * 1000 })
-  const target = selector.id ?? selector.label ?? selector.value ?? "element"
-  return `tapped ${target}`
+  await run("axe", args, { signal: options.signal, timeout: 15_000 + (selector.wait ?? 0) * 1_000 })
+  return `tapped ${selector.id ?? selector.label ?? selector.value ?? "element"}`
 }
 
 export async function tapRow(
@@ -62,25 +84,14 @@ export async function tapRow(
   row: UiRow,
   options: ActionOptions = {},
 ): Promise<string> {
-  const point = row.tap.split(",").map(Number)
-  const x = point[0]
-  const y = point[1]
+  const [x, y] = row.tap.split(",").map(Number)
   if (x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) {
-    throw new Error(`Row "${row.label || row.uid || row.kind}" has no tap point. It may be off-screen.`)
+    throw new Error(
+      `Row "${row.label || row.uid || row.kind}" has no tap point. It may be off-screen.`,
+    )
   }
   await tapPoint(udid, x, y, options)
   return `tapped ${row.kind} ${row.label || row.uid || row.value || ""} at ${x},${y}`
-}
-
-export async function screenSize(
-  udid: string,
-  signal?: AbortSignal,
-): Promise<{ width: number; height: number }> {
-  const snapshot = await readSnapshot(udid, { signal })
-  if (!snapshot.screen) {
-    throw new Error("Could not determine the simulator screen size from the accessibility tree.")
-  }
-  return snapshot.screen
 }
 
 export async function swipe(
@@ -89,42 +100,37 @@ export async function swipe(
   end: { x: number; y: number },
   options: ActionOptions = {},
 ): Promise<void> {
-  let primaryError: unknown
-  try {
-    await run(
-      "axe",
-      [
-        "swipe",
-        "--start-x",
-        String(start.x),
-        "--start-y",
-        String(start.y),
-        "--end-x",
-        String(end.x),
-        "--end-y",
-        String(end.y),
-        "--duration",
-        "0.5",
-        "--udid",
+  await withServeSimFallback(
+    () =>
+      run(
+        "axe",
+        [
+          "swipe",
+          "--start-x",
+          String(start.x),
+          "--start-y",
+          String(start.y),
+          "--end-x",
+          String(end.x),
+          "--end-y",
+          String(end.y),
+          "--duration",
+          "0.5",
+          "--udid",
+          udid,
+        ],
+        { signal: options.signal, timeout: 15_000 },
+      ).then(() => undefined),
+    async () => {
+      const screen = await screenSize(udid, options.signal)
+      await serveSimSwipe(
         udid,
-      ],
-      { signal: options.signal, timeout: 15_000 },
-    )
-    return
-  } catch (cause) {
-    primaryError = cause
-  }
-  try {
-    const screen = await screenSize(udid, options.signal)
-    await serveSimSwipe(
-      udid,
-      { x: start.x / screen.width, y: start.y / screen.height },
-      { x: end.x / screen.width, y: end.y / screen.height },
-      options,
-    )
-  } catch {
-    throw primaryError instanceof Error ? primaryError : new Error(String(primaryError))
-  }
+        { x: start.x / screen.width, y: start.y / screen.height },
+        { x: end.x / screen.width, y: end.y / screen.height },
+        options,
+      )
+    },
+  )
 }
 
 export async function scroll(
@@ -150,21 +156,14 @@ export async function typeText(
   text: string,
   options: ActionOptions = {},
 ): Promise<void> {
-  let primaryError: unknown
-  try {
-    await runWithInput("axe", ["type", "--stdin", "--udid", udid], text, {
-      signal: options.signal,
-      timeout: 30_000,
-    })
-    return
-  } catch (cause) {
-    primaryError = cause
-  }
-  try {
-    await serveSimType(udid, text, options)
-  } catch {
-    throw primaryError instanceof Error ? primaryError : new Error(String(primaryError))
-  }
+  await withServeSimFallback(
+    () =>
+      runWithInput("axe", ["type", "--stdin", "--udid", udid], text, {
+        signal: options.signal,
+        timeout: 30_000,
+      }).then(() => undefined),
+    () => serveSimType(udid, text, options),
+  )
 }
 
 export async function pressButton(
@@ -181,7 +180,9 @@ export async function pressButton(
 
   // AXe's hardware button path only lands when Simulator.app is frontmost;
   // otherwise it exits 0 and does nothing.
-  await run("open", ["-a", "Simulator"], { signal: options.signal, timeout: 10_000 }).catch(() => {})
+  await run("open", ["-a", "Simulator"], { signal: options.signal, timeout: 10_000 }).catch(
+    () => {},
+  )
   await new Promise((resolve) => setTimeout(resolve, 400))
 
   const args = ["button", button]
@@ -196,92 +197,6 @@ export async function rotate(
   options: ActionOptions = {},
 ): Promise<void> {
   await serveSimRotate(udid, orientation, options)
-}
-
-export interface Screenshot {
-  readonly path: string
-  readonly mime: string
-  readonly width: number
-  readonly height: number
-}
-
-const SCREENSHOT_RETENTION_MS = 24 * 60 * 60 * 1_000
-const SCREENSHOT_PRUNE_INTERVAL_MS = 5 * 60 * 1_000
-const SCREENSHOT_MAX_FILES = 200
-let lastScreenshotPrune = 0
-
-/**
- * Screenshots are disposable: keep the last day, capped at 200 files. The
- * scan is throttled so a burst of captures does not rescan the directory.
- */
-async function pruneScreenshots(directory: string) {
-  const now = Date.now()
-  if (now - lastScreenshotPrune < SCREENSHOT_PRUNE_INTERVAL_MS) return
-  lastScreenshotPrune = now
-  try {
-    const entries = await readdir(directory)
-    const files: { path: string; mtime: number }[] = []
-    for (const name of entries) {
-      if (!name.endsWith(".jpg") && !name.endsWith(".png")) continue
-      const path = join(directory, name)
-      try {
-        const info = await stat(path)
-        files.push({ path, mtime: info.mtimeMs })
-      } catch {}
-    }
-    files.sort((a, b) => b.mtime - a.mtime)
-    await Promise.all(
-      files.map((file, index) => {
-        const expired = now - file.mtime > SCREENSHOT_RETENTION_MS
-        if (!expired && index < SCREENSHOT_MAX_FILES) return undefined
-        return rm(file.path, { force: true }).catch(() => {})
-      }),
-    )
-  } catch {}
-}
-
-export async function screenshot(
-  udid: string,
-  options: ActionOptions & { width?: number; format?: "jpeg" | "png" } = {},
-): Promise<Screenshot> {
-  const directory = join(tmpdir(), "opencode-simulator")
-  await mkdir(directory, { recursive: true })
-  await pruneScreenshots(directory)
-  const stamp = Date.now()
-  const png = join(directory, `${udid}-${stamp}.png`)
-  const format = options.format ?? "jpeg"
-  const width = options.width ?? 800
-  await run("xcrun", ["simctl", "io", udid, "screenshot", png], {
-    signal: options.signal,
-    timeout: 30_000,
-  })
-
-  const dimensions = await run("sips", ["-g", "pixelWidth", "-g", "pixelHeight", png], {
-    signal: options.signal,
-  })
-  const widthMatch = dimensions.stdout.match(/pixelWidth:\s*(\d+)/)
-  const heightMatch = dimensions.stdout.match(/pixelHeight:\s*(\d+)/)
-  const sourceWidth = widthMatch ? Number(widthMatch[1]) : 0
-  const sourceHeight = heightMatch ? Number(heightMatch[1]) : 0
-
-  if (format === "png" && sourceWidth <= width) {
-    return { path: png, mime: "image/png", width: sourceWidth, height: sourceHeight }
-  }
-
-  const output = join(directory, `${udid}-${stamp}.${format === "png" ? "png" : "jpg"}`)
-  const args = ["--resampleWidth", String(width)]
-  if (format === "jpeg") args.push("-s", "format", "jpeg", "-s", "formatOptions", "80")
-  args.push(png, "--out", output)
-  await run("sips", args, { signal: options.signal })
-  if (output !== png) await rm(png, { force: true })
-
-  const scale = sourceWidth > 0 ? Math.min(1, width / sourceWidth) : 1
-  return {
-    path: output,
-    mime: format === "png" ? "image/png" : "image/jpeg",
-    width: Math.round(sourceWidth * scale),
-    height: Math.round(sourceHeight * scale),
-  }
 }
 
 export async function launchApp(
@@ -299,10 +214,9 @@ export async function launchApp(
       // The app may not be running; launch is the next step either way.
     }
   }
-  const result = await run(
-    "xcrun",
-    ["simctl", "launch", udid, bundleId, ...(options.args ?? [])],
-    { signal: options.signal, timeout: 30_000 },
-  )
+  const result = await run("xcrun", ["simctl", "launch", udid, bundleId, ...(options.args ?? [])], {
+    signal: options.signal,
+    timeout: 30_000,
+  })
   return result.stdout.trim() || `launched ${bundleId}`
 }

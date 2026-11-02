@@ -93,7 +93,11 @@ export function runWithInput(
       if (code === 0) {
         finish()
       } else {
-        finish(new Error(`${command} ${args.join(" ")} failed (${code}): ${stderr.trim() || stdout.trim()}`))
+        finish(
+          new Error(
+            `${command} ${args.join(" ")} failed (${code}): ${stderr.trim() || stdout.trim()}`,
+          ),
+        )
       }
     })
 

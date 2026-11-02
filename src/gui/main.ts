@@ -6,7 +6,7 @@ import { createHubManager } from "./hub"
 interface Pane {
   readonly windowId: number
   /** The session that owns the panel; one pane per window and session. */
-  readonly key: string
+  readonly sessionKey: string
   /** The device this pane streams. Undefined for the default hub. */
   readonly device: string | undefined
   url: string
@@ -14,7 +14,8 @@ interface Pane {
   readonly embed: Embed
 }
 
-const paneID = (windowId: number, key: string) => `${windowId}\u0000${key}`
+const paneId = (windowId: number, sessionKey: string) => `${windowId}\u0000${sessionKey}`
+const deviceId = (device: string | undefined) => device ?? ""
 
 /** How long a hub lives after its last panel closes, so reopening is instant. */
 const RELEASE_IDLE_MS = 30_000
@@ -24,26 +25,28 @@ const setup: Plugin.MainSetup = (ctx) => {
   const hub = createHubManager(ctx)
   const panes = new Map<string, Pane>()
   const byEmbed = new Map<string, Pane>()
-  const idle = new Map<string, ReturnType<typeof setTimeout>>()
+  const idleTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
-  const deviceKey = (device: string | undefined) => device ?? ""
+  const hasPaneFor = (device: string | undefined) =>
+    [...panes.values()].some((pane) => deviceId(pane.device) === deviceId(device))
 
   const cancelRelease = (device: string | undefined) => {
-    const timer = idle.get(deviceKey(device))
+    const key = deviceId(device)
+    const timer = idleTimers.get(key)
     if (!timer) return
     clearTimeout(timer)
-    idle.delete(deviceKey(device))
+    idleTimers.delete(key)
   }
 
   const scheduleRelease = (device: string | undefined) => {
-    const key = deviceKey(device)
-    if ([...panes.values()].some((pane) => deviceKey(pane.device) === key)) return
+    if (hasPaneFor(device)) return
     cancelRelease(device)
-    idle.set(
+    const key = deviceId(device)
+    idleTimers.set(
       key,
       setTimeout(() => {
-        idle.delete(key)
-        if ([...panes.values()].some((pane) => deviceKey(pane.device) === key)) return
+        idleTimers.delete(key)
+        if (hasPaneFor(device)) return
         void hub.release(device).catch((cause) => {
           ctx.log.write("warn", "Could not release the simulator hub", {
             device,
@@ -55,7 +58,7 @@ const setup: Plugin.MainSetup = (ctx) => {
   }
 
   const disposePane = (pane: Pane) => {
-    panes.delete(paneID(pane.windowId, pane.key))
+    panes.delete(paneId(pane.windowId, pane.sessionKey))
     byEmbed.delete(pane.embed.id)
     pane.embed.dispose()
     try {
@@ -64,13 +67,9 @@ const setup: Plugin.MainSetup = (ctx) => {
     scheduleRelease(pane.device)
   }
 
-  const disposeAll = () => {
-    for (const pane of [...panes.values()]) disposePane(pane)
-  }
-
   const provider = ctx.provide(SimulatorIpc, {
     register: async (input, caller) => {
-      const id = paneID(caller.window, input.key)
+      const id = paneId(caller.window, input.key)
       const existing = panes.get(id)
       if (existing && existing.device === input.device) {
         return { embed: existing.embed.id, url: existing.url }
@@ -86,6 +85,7 @@ const setup: Plugin.MainSetup = (ctx) => {
       // the hub starts, so a timer cannot abort a start that is already underway.
       cancelRelease(input.device)
       const { url } = await hub.ensure(input.device)
+
       const view = new WebContentsView({
         webPreferences: {
           contextIsolation: true,
@@ -99,7 +99,7 @@ const setup: Plugin.MainSetup = (ctx) => {
       const embed = ctx.embeds.create(view, window)
       const pane: Pane = {
         windowId: caller.window,
-        key: input.key,
+        sessionKey: input.key,
         device: input.device,
         url,
         view,
@@ -113,7 +113,10 @@ const setup: Plugin.MainSetup = (ctx) => {
         provider.emit("failed", { embed: embed.id, detail: `${description} (${code})` })
       })
       view.webContents.on("render-process-gone", (_event, details) => {
-        provider.emit("failed", { embed: embed.id, detail: `The viewer process stopped: ${details.reason}` })
+        provider.emit("failed", {
+          embed: embed.id,
+          detail: `The viewer process stopped: ${details.reason}`,
+        })
       })
 
       try {
@@ -125,6 +128,7 @@ const setup: Plugin.MainSetup = (ctx) => {
       embed.show(true)
       return { embed: embed.id, url }
     },
+
     close: (input, caller) => {
       const pane = byEmbed.get(input.embed)
       if (!pane || pane.windowId !== caller.window) return
@@ -155,9 +159,9 @@ const setup: Plugin.MainSetup = (ctx) => {
 
   ctx.onCleanup(() => {
     stopStarted()
-    disposeAll()
-    for (const timer of idle.values()) clearTimeout(timer)
-    idle.clear()
+    for (const pane of [...panes.values()]) disposePane(pane)
+    for (const timer of idleTimers.values()) clearTimeout(timer)
+    idleTimers.clear()
     void hub.dispose()
     provider.dispose()
   })

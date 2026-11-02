@@ -81,7 +81,8 @@ function frameOf(node: AxNode): Frame | null {
       const y = values[1]
       const width = values[2]
       const height = values[3]
-      if (x === undefined || y === undefined || width === undefined || height === undefined) return null
+      if (x === undefined || y === undefined || width === undefined || height === undefined)
+        return null
       if (width > 0 && height > 0) return { x, y, width, height }
     }
   }
@@ -100,7 +101,10 @@ const isInteractive = (node: AxNode): boolean => {
 
 const isScrollBar = (node: AxNode): boolean => {
   const label = node.AXLabel ?? ""
-  return node.type === "Slider" && (label.startsWith("Vertical scroll bar") || label.startsWith("Horizontal scroll bar"))
+  return (
+    node.type === "Slider" &&
+    (label.startsWith("Vertical scroll bar") || label.startsWith("Horizontal scroll bar"))
+  )
 }
 
 const isPunctuation = (label: string): boolean =>

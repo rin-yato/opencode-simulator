@@ -36,23 +36,20 @@ export default Plugin.define({
       render: (props) => <SimulatorPanel session={props.session} />,
     })
 
-    ctx.add(
-      MenuItem,
-      (): MenuItem => {
-        const session = ctx.sessions.current()
-        return {
-          menu: "session.panel",
-          id: "device",
-          title: ctx.t("panel.title"),
-          icon: "monitor",
-          opened: !!session && ctx.layout.state(`${ctx.id}:device`, session) !== "closed",
-          run: () => {
-            const current = ctx.sessions.current()
-            if (current) ctx.layout.open(`${ctx.id}:device`, current)
-          },
-        }
-      },
-    )
+    ctx.add(MenuItem, (): MenuItem => {
+      const session = ctx.sessions.current()
+      return {
+        menu: "session.panel",
+        id: "device",
+        title: ctx.t("panel.title"),
+        icon: "monitor",
+        opened: !!session && ctx.layout.state(`${ctx.id}:device`, session) !== "closed",
+        run: () => {
+          const current = ctx.sessions.current()
+          if (current) ctx.layout.open(`${ctx.id}:device`, current)
+        },
+      }
+    })
 
     ctx.add(Command, () => ({
       id: "open",
@@ -70,7 +67,9 @@ export default Plugin.define({
     const client = () => ctx.client.rpc(SIMULATOR_RPC)
     let stopped = false
 
-    const handleOpen = (event: { data?: { request?: unknown; sessionID?: unknown; udid?: unknown } }) => {
+    const handleOpen = (event: {
+      data?: { request?: unknown; sessionID?: unknown; udid?: unknown }
+    }) => {
       const request = typeof event.data?.request === "string" ? event.data.request : ""
       if (!request) return
       const sessionID = typeof event.data?.sessionID === "string" ? event.data.sessionID : ""
@@ -79,7 +78,9 @@ export default Plugin.define({
       // have moved to another session while the tool was running.
       const session = ctx.sessions.list().find((candidate) => candidate.id === sessionID)
       if (!session) {
-        void client().opened({ request, opened: false }).catch(() => {})
+        void client()
+          .opened({ request, opened: false })
+          .catch(() => {})
         return
       }
       const udid = typeof event.data?.udid === "string" ? event.data.udid : ""

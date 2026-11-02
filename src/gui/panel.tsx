@@ -90,13 +90,7 @@ export function SimulatorPanel(props: { session: MountedSession }) {
     >
       <Show when={embed()}>
         {(id) => (
-          <ctx.embeds.View
-            id={id()}
-            visible={true}
-            page={url()}
-            radius={8}
-            class="size-full"
-          />
+          <ctx.embeds.View id={id()} visible={true} page={url()} radius={8} class="size-full" />
         )}
       </Show>
       <Show when={!embed()}>

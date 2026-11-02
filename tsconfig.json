@@ -7,8 +7,10 @@
     "jsxImportSource": "solid-js",
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": ["node", "bun"]
   },
   "include": ["src", "vite.config.ts"]
 }

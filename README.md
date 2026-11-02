@@ -1,216 +1,271 @@
 # opencode-simulator
 
-A personal OpenCode Desktop plugin that embeds an iOS Simulator in a side-panel
-tab and registers simulator tools the agent can call directly.
+Embed a live iOS Simulator in OpenCode Desktop and let the agent drive it.
 
-The plugin starts `serve-sim` on loopback and places its preview in a native
-`WebContentsView` through `ctx.embeds`. The simulator itself stays on the Mac;
-the panel is the live stream and input surface.
-
-It also has a server part that registers a `sim` tool namespace with OpenCode:
-device listing/boot/start, accessibility reads and input, settings, keyboard,
-status bar, screenshots, waits, and app launch. No MCP server is involved.
-
-The same plugin ships a `simulator` skill, so a fresh project gets the tools and
-the instructions for using them together. The skill tells the agent to use
-`sim_*` instead of `xcrun simctl`, Xcode, or ad-hoc scripts.
-
-`serve-sim` is run with the system `node`, not Electron. Its native capture
-addon is signed by Expo, and Electron's hardened runtime refuses to map a
-foreign Team ID. Running it under Electron is what produces:
-`Stream unavailable — retrying…`.
+- **Live panel.** The simulator streams into a side-panel tab. Tap, drag, type,
+  rotate, and press hardware buttons directly in the panel.
+- **Agent tools.** Eighteen `sim_*` tools cover device lifecycle, accessibility
+  reads, input, UI settings, screenshots, and waits.
+- **Session-scoped.** Each session remembers its simulator. Two sessions can
+  test two devices at once, including two copies of the same iPhone model.
+- **Bundled skill.** The plugin teaches agents to use the tools instead of
+  `xcrun simctl`, Xcode, `axe`, or generated shell scripts.
+- **Local only.** No telemetry and no hosted service. Every subprocess and file
+  write is listed under [Security and privacy](#security-and-privacy).
 
 ## Requirements
 
-- macOS with Xcode and at least one iOS Simulator runtime.
-- OpenCode Desktop 2.2.x.
-- Node.js 22 or newer on `PATH`. Set `OPENCODE_SIMULATOR_NODE` to an absolute
-  Node path if the desktop app cannot find it.
-- `expo-device-hub` installed in this package; the plugin uses its vendored
-  `serve-sim`.
-- [AXe](https://github.com/cameroncooke/AXe) (`axe`) 1.8+ is recommended for
-  accessibility reads and selector taps. Without it, reads fall back to
-  serve-sim's `/ax` endpoint and input falls back to serve-sim gestures.
+- macOS with Xcode and at least one installed iOS Simulator runtime.
+- OpenCode Desktop 2.2 or newer.
+- Node.js 22 or newer on `PATH`. The simulator stream runs under your Node, not
+  Electron. Set `OPENCODE_SIMULATOR_NODE` to an absolute path if the desktop app
+  cannot find it.
+- [AXe](https://github.com/cameroncooke/AXe) 1.8 or newer is recommended for
+  accessibility reads and input. Without it, reads fall back to serve-sim's
+  accessibility endpoint and input falls back to serve-sim gestures.
 
 ## Install
 
+### From a local checkout
+
 ```sh
-cd /Users/yato/Documents/dev/opencode-simulator
+git clone https://github.com/rin-yato/opencode-simulator.git
+cd opencode-simulator
 bun install
 bun run build
 ```
 
-Add the plugin to the global `~/.config/opencode/opencode.jsonc`:
+Add the checkout to your global `~/.config/opencode/opencode.jsonc`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["/absolute/path/to/opencode-simulator"]
+}
+```
+
+The plugin finds the `serve-sim` CLI inside its own
+`node_modules/expo-device-hub`. If you use a non-standard layout, point at the
+CLI explicitly:
 
 ```jsonc
 {
   "plugins": [
     {
-      "package": "/Users/yato/Documents/dev/opencode-simulator",
+      "package": "/absolute/path/to/opencode-simulator",
       "options": {
-        "hubCli": "/Users/yato/Documents/dev/opencode-simulator/node_modules/expo-device-hub/vendor/serve-sim/dist/serve-sim.js"
+        "hubCli": "/absolute/path/to/node_modules/expo-device-hub/vendor/serve-sim/dist/serve-sim.js"
       }
     }
   ]
 }
 ```
 
-OpenCode watches config and rebuilds the GUI bundle. A rebuild also reloads the
-plugin in every window and in the Electron main process.
+### From npm
+
+Once the package is published:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-simulator"]
+}
+```
+
+OpenCode reloads the plugin when the config changes. GUI changes need a fresh
+bundle: run `bun run build` after editing panel code.
+
+### Options
+
+| Option | Default | Purpose |
+|---|---|---|
+| `hubCli` | vendored `serve-sim` | Absolute path to the serve-sim CLI |
+| `showSimulator` | `false` | Keep Simulator.app visible instead of hiding it after the stream starts |
+
+Environment equivalents: `OPENCODE_SIMULATOR_HUB`,
+`OPENCODE_SIMULATOR_SHOW_SIMULATOR=1`, and `OPENCODE_SIMULATOR_NODE`.
 
 ## Use
 
-- Call `sim_start` to boot a device and open the panel, or boot one with
-  Xcode/Simulator.app or `sim_boot`.
-- Open the right side panel and choose **Simulator** from the `+` menu, or run
-  **Open Simulator** from the command palette.
-- The panel shows the serve-sim preview for the requested device. `sim_start`
-  opens the tab **in the session that called it** and **on the device it
-  booted**, even when other simulators are already booted. It is interactive:
-  tap, drag, type, rotate, home, and the tools work as in serve-sim.
-- Closing the panel disposes the native view; the simulator keeps running.
-  The serve-sim hub for that device stops 30s after its last panel closes.
+1. Ask the agent to start the simulator, or call `sim_start` yourself:
+   `sim_start({ app: "com.example.app" })`.
+2. The panel opens in the **session that called the tool**. You can also open it
+   from the side-panel `+` menu or the **Open Simulator** command.
+3. Work in the panel or let the agent call `sim_ui`, `sim_tap`, `sim_type`, and
+   the other tools.
 
-Each session remembers the last device it opened, so reopening the tab after a
-reload restores that simulator. A manual open with no remembered device targets
-the first booted simulator; boot one first if none are running.
+`sim_start` boots the device, launches the app if you pass a bundle id, and
+streams that exact device even when other simulators are booted. Closing the
+panel disposes the view; the simulator keeps running, and its stream stops 30
+seconds after the last panel closes.
 
-Multiple sessions can each own a simulator. Call `sim_start` with a different
-device in each session; switching sessions switches the panel to that session's
-device, and two windows can stream two devices at the same time. Only the routed
-session's panel is mounted in a window, so a background session keeps working
-through the AXe-backed tools while its tab is closed.
+### Parallel sessions
 
-## Agent tools
+A simulator is one UDID. Two sessions that target the same UDID share one
+screen, one app state, and one set of taps, so they will fight.
 
-The server part registers a `sim` namespace. Tools are available immediately;
-no MCP server and no extra config.
+To run the same model twice, give each session its own simulator:
 
-Each session remembers the device it booted or started. Omitting `udid` on any
-tool targets that device, so two sessions testing two simulators do not have to
-pass a UDID on every call. The default is persisted in the plugin's server
-storage and survives plugin reloads.
+```text
+sim_create({ from: "iPhone 17 Pro", app: "com.example.app" })
+sim_start()
+```
 
-Two sessions pointing at the **same UDID** are the same simulator: one screen,
-one app state, one set of taps. To run the same model twice, give each session
-its own device with `sim_create({ from, app })`; it creates a same-model
-simulator, installs the app from the source, and makes the new UDID that
-session's default. The source keeps running.
+`sim_create` creates a device with the source's model and runtime, boots it,
+installs the app bundle from the source, and makes the new UDID the session's
+default. App data is not copied, so the copy starts fresh. Delete it when the
+parallel work is done:
 
-### Lifecycle
+```text
+sim_delete({ udid: "iPhone 17 Pro Copy" })
+```
 
-- Panels are views: closing the tab, deleting the session, or closing the window
-  disposes the native view. The serve-sim hub for a device stops 30s after its
-  last panel closes; quitting OpenCode stops all hubs. A crash is recovered on
-  the next launch by reaping the pids stored in plugin storage.
-- Per-session device mappings are tiny (a session key and a UDID). They are
-  capped at 500 entries in both the window and the server store.
-- Screenshots live in `$TMPDIR/opencode-simulator/` and are pruned to the last
-  24 hours, max 200 files.
-- Stale serve-sim state files (dead pid) are removed when the server plugin
-  loads, and `sim_status` ignores a port whose process is gone.
-- **Simulators are not auto-deleted.** A device created with `sim_create` is a
-  real simulator with its own disk image. Delete it with
-  `sim_delete({ udid })` when the parallel work is done.
+`sim_delete` shuts the device down first and refuses if another session still
+owns it unless you pass `force: true`.
+
+## Tools
+
+Tools are registered in the `sim` namespace. In Code Mode they are
+`tools.sim.<name>`.
 
 | Tool | Use |
 |---|---|
 | `sim_devices` | List simulators, states, runtimes, and UDIDs |
-| `sim_boot` | Boot a device headlessly by UDID or name |
-| `sim_create` | Create a same-model copy, optionally install an app from the source, for a parallel session |
-| `sim_delete` | Shut down and delete a simulator; refuses if another session owns it unless `force` |
-| `sim_start` | Boot if needed, optionally launch an app, and open the Simulator panel on that device |
+| `sim_boot` | Boot a device headlessly |
+| `sim_create` | Create a same-model copy, optionally installing an app from the source |
+| `sim_delete` | Shut down and delete a simulator |
+| `sim_start` | Boot, optionally launch an app, and open the panel |
+| `sim_launch` | Terminate and relaunch an app by bundle id |
 | `sim_status` | Device, app, screen size, AXe version, serve-sim port |
-| `sim_ui` | Compact action table; `find` for one control, `mode: "interactive"` for the next action |
+| `sim_ui` | Compact accessibility table; `find` for one control |
 | `sim_tap` | Tap by `text`, `id`, `label`, `value`, or normalized `x`/`y` |
 | `sim_scroll` | Swipe `up` or `down`, optionally multiple times |
 | `sim_type` | Type into the focused field; `submit: true` presses Return |
 | `sim_button` | `home`, `lock`, `side-button`, `siri`, `apple-pay` |
 | `sim_rotate` | Portrait or landscape |
-| `sim_settings` | Read/change appearance, text size, contrast, motion, voiceover, keyboard mode |
+| `sim_settings` | Read or change appearance, text size, contrast, motion, and more |
 | `sim_keyboard` | Show, hide, or toggle the software keyboard |
-| `sim_statusbar` | Override or clear status bar time/battery/signal for screenshots |
-| `sim_screenshot` | Small JPEG (800px default) for visual checks |
-| `sim_wait` | Wait for text, return PASS/FAIL |
-| `sim_launch` | Terminate and relaunch an app by bundle id |
+| `sim_statusbar` | Override the status bar for deterministic screenshots |
+| `sim_screenshot` | Small JPEG (800 px by default) for visual checks |
+| `sim_wait` | Wait for text and return PASS or FAIL |
+
+`udid` accepts a UDID, an exact device name, or a unique name fragment.
+Ambiguous matches fail instead of guessing. Omitting it targets the device the
+session started, then the only booted simulator.
+
+See [docs/tools.md](docs/tools.md) for arguments, return values, and failure
+modes.
 
 Typical loop:
 
 ```text
+sim_start({ app: "com.example.app" })
 sim_ui({ mode: "interactive" })
 sim_tap({ text: "Products" })
 sim_wait({ text: "Products" })
 sim_scroll({ direction: "down" })
-sim_ui({ find: "Afnan 9pm" })
+sim_screenshot({ width: 500 })
 ```
 
-Prefer `sim_ui` and `sim_wait` over screenshots. Screenshots cost image tokens;
-a compact text read is a few hundred.
-
-## Bundled skill
-
-`src/index.ts` registers the **Simulator** skill (`simulator`) through
-`ctx.skill.transform`, reading `src/skills/simulator.md`. It is advertised to
-every agent in every project where the plugin is loaded, and it is scoped to
-the project's plugin instance.
-
-The skill is the contract for iOS UI work: use `sim_*` for boot, UI reads, taps,
-scrolling, typing, screenshots, settings, and status bar; never drive the
-simulator with `xcrun simctl`, `axe`, `idb`, Xcode, or generated shell scripts.
-It also documents the normal loop, selector rules, and failure modes.
-
-Edit `src/skills/simulator.md` to change the guidance, then touch the global
-config (or run `bun run build` for GUI changes) to reload the plugin.
+Prefer `sim_ui` and `sim_wait` over screenshots. A compact text read is a few
+hundred tokens; an image costs far more.
 
 ## How it works
 
-- `src/gui.tsx` registers the panel, menu item, and command.
-- `src/gui/main.ts` owns the `WebContentsView` and the hub manager.
-- `src/gui/hub.ts` runs one `serve-sim` per device (`--single-device`), waits
-  for `/readyz`, reconnects a pane when its hub restarts, and releases idle
-  hubs.
-- `src/gui/requests.ts` records the device each session asked for, persisted in
-  `localStorage`.
-- `src/gui/panel.tsx` renders the embed and its retry state.
-- `src/index.ts` is the server part. It registers the `sim` tools, the
-  `simulator` skill, and the `open` RPC used by `sim_start`.
-- `src/skills/simulator.md` is the bundled skill body.
-- `src/rpc.ts` defines that event and the `opened` acknowledgement.
-- `src/gui.tsx` listens for `open` and opens the panel tab.
-- `src/server/devices.ts` lists, matches, and boots devices.
-- `src/server/settings.ts` handles UI settings, keyboard, and status bar.
-- `src/server/ax.ts` reads and compacts the accessibility tree.
-- `src/server/actions.ts` taps, scrolls, types, presses buttons, and captures.
-- `src/server/serve-sim.ts` resolves the hub CLI and falls back to its gestures.
-- The GUI is one prebuilt CommonJS bundle at `dist/gui-experimental.cjs`, built
-  with `@opencode/plugin/gui/vite`.
+The package has three parts:
+
+- **Server** (`src/index.ts`, `src/server/`) registers the `sim` tools and the
+  bundled `simulator` skill, and implements the `open` RPC event.
+- **GUI window** (`src/gui.tsx`) registers the panel, menu item, and command.
+  It records the device each session asked for and opens the tab in that
+  session's strip.
+- **GUI main** (`src/gui/main.ts`, `src/gui/hub.ts`) owns one native
+  `WebContentsView` per window and session, and one `serve-sim` process per
+  device, locked with `--single-device`.
+
+`src/gui/panel.tsx` renders the embedded preview. `src/server/accessibility.ts`
+compacts the AX tree, `src/server/actions.ts` performs input, and
+`src/server/devices.ts` wraps `simctl`.
+
+The architecture and lifecycle notes are in
+[docs/architecture.md](docs/architecture.md).
+
+## Security and privacy
+
+The plugin is meant to be auditable. This is the complete list of external
+commands it can run:
+
+| Command | Why |
+|---|---|
+| `xcrun simctl list/boot/bootstatus/shutdown/create/delete/install/get_app_container/launch/terminate/io/status_bar` | Device lifecycle, app install, screenshots, status bar |
+| `axe describe-ui/tap/swipe/type/key/button/--version` | Accessibility reads and input when AXe is installed |
+| `node .../serve-sim.js` | Streaming preview, gestures, settings, software keyboard |
+| `osascript` | Hide Simulator.app after a stream starts (skipped with `showSimulator`) |
+| `sips` | Resize screenshots |
+| `open -a Simulator` | Focus Simulator.app before an AXe hardware-button fallback |
+| `ps` | Identify a hub process left behind by a crash |
+
+Every command uses `execFile`/`spawn` with an argument array. The plugin does
+not build shell strings.
+
+Data touched:
+
+- **Read:** simulator list, accessibility tree, app containers for `sim_create`,
+  and the serve-sim port files.
+- **Written:** screenshots in `$TMPDIR/opencode-simulator/` (last 24 hours, max
+  200 files), serve-sim state in `$TMPDIR/serve-sim/`, the plugin storage key
+  `session-devices` (capped at 500 entries), GUI storage key `hubs`, and
+  `localStorage` key `opencode-simulator.devices` in the desktop window.
+- **Created on disk:** `sim_create` makes a real simulator image. It is not
+  auto-deleted; use `sim_delete`.
+- **Deleted:** `sim_delete` removes the simulator and all its data.
+
+The plugin does not send telemetry. serve-sim binds to `127.0.0.1` and is not
+exposed on the network. No credentials are read or stored.
+
+Report a vulnerability through the repository's private security advisory
+form. See [SECURITY.md](SECURITY.md).
+
+## Troubleshooting
+
+**`Stream unavailable — retrying…`**
+serve-sim is running under Electron. Its native addon is signed by Expo and
+Electron's hardened runtime rejects it. Set `OPENCODE_SIMULATOR_NODE` to a
+system Node 22+ path.
+
+**The panel is empty or shows old UI**
+Run `bun run build`. The GUI bundle at `dist/gui-experimental.cjs` must be
+rebuilt after panel changes. If a mounted panel still has stale code, restart
+OpenCode once.
+
+**`serve-sim=not running`**
+The simulator tab has not been shown yet. Open the tab in the calling session,
+or use the AXe-backed tools (`status`, `ui`, `tap`, `scroll`, `type`, `wait`,
+`screenshot`), which work without a hub.
+
+**Multiple booted simulators**
+Pass `udid` to the tool, or start the device in the session first. The session
+default is remembered across reloads.
+
+**The Simulator window is visible**
+Set `options.showSimulator` or `OPENCODE_SIMULATOR_SHOW_SIMULATOR=1` only if you
+want that. Otherwise the first hide may ask for Automation access to System
+Events.
 
 ## Development
 
 ```sh
-bun run dev        # vite build --watch
-bun run typecheck
+bun install
+bun run check      # typecheck + tests
+bun run build      # GUI bundle
+bun run dev        # GUI watch mode
+bun run format
 ```
 
-Server tool code is loaded from `src/`; after changing it, touch
-`~/.config/opencode/opencode.jsonc` to force OpenCode to reload the plugin.
-After GUI changes, run `bun run build`: it reloads the main process and the
-window entries. Touching the config alone was not reliable for GUI code; if a
-mounted panel keeps stale code, restart OpenCode once.
+The server part is loaded from `src/`; the GUI is bundled to
+`dist/gui-experimental.cjs`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the code
+map and pull-request checklist.
 
-## Uninstall
+## License
 
-Remove the plugin entry from the global config. If a serve-sim process is left
-behind after a crash, the next plugin start reaps it by the stored pid/port.
-
-## Notes
-
-- This is desktop-only and macOS-only. The plugin declares `os: ["macos"]`.
-- serve-sim opens Simulator.app after boot. The hub hides it once the stream is
-  ready so the panel is the only visible copy; capture and input keep working.
-  Set `options.showSimulator: true` (or `OPENCODE_SIMULATOR_SHOW_SIMULATOR=1`)
-  to keep the window visible. The first hide may ask for Automation access to
-  System Events.
-- serve-sim binds `127.0.0.1`; it is never exposed on the network.
-- Do not spawn serve-sim with `process.execPath` / `ELECTRON_RUN_AS_NODE`; the
-  native addon will fail to load under Electron's hardened runtime.
+MIT
