@@ -1,7 +1,7 @@
 import { basename } from "node:path"
 import { pathToFileURL } from "node:url"
 import { Plugin } from "@opencode/plugin"
-import { bootDevice, listDevices, resolveDevice, resolveStartDevice } from "./devices"
+import { bootDevice, createDeviceFrom, installAppFrom, listDevices, resolveDevice, resolveStartDevice, type Device } from "./devices"
 import { findRows, formatMatches, formatSnapshot, readSnapshot, resolveRow } from "./ax"
 import {
   launchApp,
@@ -106,6 +106,20 @@ interface LaunchInput extends Common {
   readonly args?: readonly string[]
 }
 
+interface CreateInput {
+  readonly from?: string
+  readonly name?: string
+  readonly app?: string
+}
+
+const uniqueDeviceName = (base: string, devices: readonly Device[]): string => {
+  const taken = new Set(devices.map((device) => device.name))
+  let name = `${base} Copy`
+  let index = 2
+  while (taken.has(name)) name = `${base} Copy ${index++}`
+  return name
+}
+
 const udid = {
   type: "string",
   description:
@@ -182,7 +196,15 @@ export async function registerTools(
         try {
           const input = raw as Common
           const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
-          const snapshot = await readSnapshot(device.udid, { signal: context.signal })
+          let snapshot: Awaited<ReturnType<typeof readSnapshot>> | undefined
+          let snapshotError = ""
+          try {
+            snapshot = await readSnapshot(device.udid, { signal: context.signal })
+          } catch (cause) {
+            // A freshly booted device can reject the AX read for a moment; the
+            // rest of the status is still useful.
+            snapshotError = errorText(cause).split("\n")[0] ?? ""
+          }
           const port = serveSimPort(device.udid)
           let axeVersion = "missing"
           try {
@@ -194,12 +216,12 @@ export async function registerTools(
               `device=${device.name}`,
               `udid=${device.udid}`,
               `state=${device.state}`,
-              `app=${snapshot.app || "-"}`,
-              `screen=${snapshot.screen ? `${Math.round(snapshot.screen.width)}x${Math.round(snapshot.screen.height)}` : "unknown"}`,
-              `axe=${axeVersion}`,
+              `app=${snapshot?.app || "-"}`,
+              `screen=${snapshot?.screen ? `${Math.round(snapshot.screen.width)}x${Math.round(snapshot.screen.height)}` : "unknown"}`,
+              `axe=${axeVersion}${snapshotError ? ` (UI read failed: ${snapshotError})` : ""}`,
               `serve-sim=${port ? `http://127.0.0.1:${port}` : "not running"}`,
             ].join("\n"),
-            { udid: device.udid, app: snapshot.app, port },
+            { udid: device.udid, app: snapshot?.app, port },
           )
         } catch (cause) {
           return fail(cause)
@@ -270,6 +292,85 @@ export async function registerTools(
     })
 
     editor.add({
+      name: "create",
+      description:
+        "Create a new simulator with the same model and runtime as a source simulator, leaving the source running. Optionally install an app that is installed on the source. Use this when two sessions need the same device without sharing one UDID.",
+      input: {
+        type: "object",
+        properties: {
+          from: {
+            type: "string",
+            description:
+              "Source simulator name or UDID. Defaults to this session's device, then the only booted simulator.",
+          },
+          name: {
+            type: "string",
+            description: "Name for the new simulator. Defaults to '<source> Copy', made unique.",
+          },
+          app: {
+            type: "string",
+            description: "Optional bundle id to install from the source, e.g. com.melis.app.",
+          },
+        },
+        additionalProperties: false,
+      },
+      options,
+      execute: async (raw, context) => {
+        try {
+          const input = raw as CreateInput
+          const source = await resolveStartDevice(pick(context.sessionID, input.from), {
+            signal: context.signal,
+          })
+          const devices = await listDevices({ signal: context.signal })
+          const name = input.name?.trim() || uniqueDeviceName(source.name, devices)
+          if (devices.some((device) => device.name === name)) {
+            throw new Error(`A simulator named "${name}" already exists. Pass another name.`)
+          }
+
+          const created = await createDeviceFrom(source, name, { signal: context.signal })
+          let booted = ""
+          let installed = ""
+          let installError = ""
+          if (input.app) {
+            // install requires a booted device; keep it booted for the next step.
+            const target: Device = {
+              udid: created.udid,
+              name: created.name,
+              state: "Shutdown",
+              runtime: source.runtime,
+              available: true,
+            }
+            booted = await bootDevice(target, { signal: context.signal })
+            try {
+              const path = await installAppFrom(created.udid, source.udid, input.app, {
+                signal: context.signal,
+              })
+              installed = `app=${input.app} (installed from ${path})`
+            } catch (cause) {
+              installError = `app=install failed: ${errorText(cause)}`
+            }
+          }
+          await remember(context.sessionID, created.udid)
+
+          const lines = [
+            `created ${created.name} (${created.udid}) from ${source.name} (${source.udid})`,
+            ...(booted ? [booted] : []),
+            ...(installed ? [installed] : []),
+            ...(installError ? [installError] : []),
+            "Use sim_start to open its panel.",
+          ]
+          return ok(lines.join("\n"), {
+            udid: created.udid,
+            name: created.name,
+            source: source.udid,
+          })
+        } catch (cause) {
+          return fail(cause)
+        }
+      },
+    })
+
+    editor.add({
       name: "start",
       description:
         "Start the simulator end to end: boot the device if needed, optionally launch an app, and open the Simulator panel in the session that called this tool. Use this when the user wants to see or interact with the simulator.",
@@ -289,6 +390,9 @@ export async function registerTools(
         try {
           const input = raw as StartInput
           const device = await resolveStartDevice(pick(context.sessionID, input.udid), { signal: context.signal })
+          const shared = [...remembered.entries()].some(
+            ([session, owned]) => session !== context.sessionID && owned === device.udid,
+          )
           const boot = await bootDevice(device, { signal: context.signal })
           await remember(context.sessionID, device.udid)
 
@@ -316,6 +420,11 @@ export async function registerTools(
           const lines = [
             boot,
             ...(launched ? [`app=${input.app}`, launched] : []),
+            ...(shared
+              ? [
+                  "note=this simulator is also used by another session; run sim_create to get an independent copy of the same model.",
+                ]
+              : []),
             !opened
               ? "panel=requested; the tab opens in the calling session's strip. Open that session in a window to see it, or restart OpenCode once if the window code is stale."
               : port

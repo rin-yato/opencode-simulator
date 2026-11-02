@@ -31,6 +31,14 @@ remembers each session's device in plugin storage, so omitting `udid` on
 `sim_ui`, `sim_tap`, `sim.status`, etc. targets that session's simulator even
 when several are booted.
 
+Two sessions on the **same UDID** are one simulator: shared screen, shared app
+state, shared taps. `sim.create` handles the parallel case: it creates a device
+with the source's device type and runtime, boots it if an app is requested,
+installs that app from the source (bundle only, not data), and makes the new
+UDID the session's default. The source stays running. `sim.start` adds a
+`note=this simulator is also used by another session` line when another session
+already owns the UDID.
+
 The entry answers `opened: false` when the calling session's tab is not in that
 window; the server ignores false acks so another window can still claim the
 request. The ack budget is 8s (cold panel + serve-sim start exceeded the old
@@ -183,6 +191,14 @@ The old Melis `use-simulator` skill's `ui.py` compacting logic was ported into
   `sim_start({ udid: "iPhone 17e" })` then `sim_status()` (no udid) reported
   17e, and switching back to 17 Pro made it report 17 Pro. The GUI tab followed
   the same device.
+- Parallel same-model devices verified: `sim_create({ from: "iPhone 17 Pro",
+  app: "com.melis.app" })` made "iPhone 17 Pro Parallel", booted it, and
+  installed Melis. Both 17 Pros stayed booted; the panel showed the fresh Melis
+  onboarding on the copy while the original kept its Orders state. The test
+  device was shut down and deleted afterwards.
+- `sim.status` now degrades gracefully when a freshly booted device rejects
+  `axe describe-ui`; it reports the device, app, screen (if known), AXe version,
+  and serve-sim port with a `UI read failed` note instead of failing outright.
 - The bundled `simulator` skill is registered through `ctx.skill.transform`,
   appears in the model's skill list, and loads with the full guidance. Its
   description explicitly forbids `xcrun simctl`, Xcode, and ad-hoc scripts.
@@ -254,6 +270,12 @@ The old Melis `use-simulator` skill's `ui.py` compacting logic was ported into
   that omits `udid` resolves that device first, then falls back to the only
   booted simulator. This is what keeps two sessions from grabbing each other's
   simulator when both are booted.
+- **Same UDID means the same simulator.** Two sessions on one UDID share the
+  screen, app state, and taps; the panel hub is shared on purpose. For parallel
+  sessions on the same model, `sim.create` makes a new device of the same type
+  and runtime (booting it to install the requested app from the source) and
+  makes it the session's default. `simctl clone` would copy data but requires
+  the source to be shutdown, so the tool uses create + install instead.
 - **If the calling session is not the routed one**, the tab is stored but not
   mounted, so serve-sim does not start until the user opens that session. AXe
   and simctl tools still work; serve-sim-only features wait for the panel.
@@ -292,8 +314,8 @@ stale code, restart OpenCode once.
    subagent opens the panel in the owning session.
 2. Verify `sim.rotate` on SpringBoard or a rotatable app; otherwise remove or
    document it as serve-sim-only.
-3. Decide whether `sim.start` should target one device (`--single-device`) when
-   several are already booted; today the hub serves every booted device.
+3. Add `sim.delete` (or a `prune` tool) so created parallel devices can be
+   cleaned up without `xcrun simctl`.
 4. Remove the old project-local Melis `use-simulator` skill now that the plugin
    ships `simulator`; keep only project-specific notes if any remain.
 5. Consider `sim.batch` for multi-step flows in one tool call.

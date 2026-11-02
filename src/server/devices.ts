@@ -13,6 +13,7 @@ interface RawDevice {
   name?: string
   state?: string
   isAvailable?: boolean
+  deviceTypeIdentifier?: string
 }
 
 interface RawList {
@@ -134,4 +135,61 @@ export async function bootDevice(
     timeout: 180_000,
   })
   return `booted ${device.name} (${device.udid})`
+}
+
+/**
+ * Create a clean simulator with the same device type and runtime as `source`.
+ * The source is left alone, so it can stay booted while the copy runs.
+ */
+export async function createDeviceFrom(
+  source: Device,
+  name: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<{ readonly udid: string; readonly name: string }> {
+  const { stdout } = await run("xcrun", ["simctl", "list", "devices", "-j"], {
+    signal: options.signal,
+    timeout: 15_000,
+  })
+  const parsed = JSON.parse(stdout) as RawList
+  let deviceType: string | undefined
+  let runtime: string | undefined
+  for (const [key, entries] of Object.entries(parsed.devices ?? {})) {
+    const entry = (entries ?? []).find((candidate) => candidate.udid === source.udid)
+    if (!entry) continue
+    deviceType = entry.deviceTypeIdentifier
+    runtime = key
+    break
+  }
+  if (!deviceType || !runtime) {
+    throw new Error(`Could not read the device type or runtime for ${source.name}.`)
+  }
+
+  const created = await run("xcrun", ["simctl", "create", name, deviceType, runtime], {
+    signal: options.signal,
+    timeout: 60_000,
+  })
+  return { udid: created.stdout.trim(), name }
+}
+
+/**
+ * Install an app that is already installed on `source` onto another simulator.
+ * Only the bundle is copied; app data stays on the source.
+ */
+export async function installAppFrom(
+  target: string,
+  source: string,
+  bundleId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<string> {
+  const container = await run("xcrun", ["simctl", "get_app_container", source, bundleId, "app"], {
+    signal: options.signal,
+    timeout: 15_000,
+  })
+  const path = container.stdout.trim()
+  if (!path) throw new Error(`No installed app ${bundleId} on the source simulator.`)
+  await run("xcrun", ["simctl", "install", target, path], {
+    signal: options.signal,
+    timeout: 120_000,
+  })
+  return path
 }

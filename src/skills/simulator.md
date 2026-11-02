@@ -35,6 +35,24 @@ Every tool remembers the device this session started: after
 device. `sim_boot` boots without opening the panel. `sim_start` is the normal
 entry.
 
+## Parallel devices
+
+A simulator is one UDID. Two sessions targeting the same UDID share one screen,
+one app state, and one set of taps: they will fight. For the same model in two
+sessions, give each session its own simulator:
+
+```
+sim_create({ from: "iPhone 17 Pro", app: "com.example.app" })
+sim_start()            # defaults to the new device
+```
+
+`sim_create` makes a new device with the source's model and runtime, installs
+the app from the source, and makes the new UDID this session's default. The
+source keeps running and its data is untouched. App data is not copied; the
+new device starts with a fresh install. If `sim_start` answers
+`note=this simulator is also used by another session`, create a copy before
+testing.
+
 The panel is session-scoped. It appears in the strip of the session that
 called the tool, even if the user has switched to another session. It is also
 device-scoped: it streams the simulator `sim_start` was given, even when other
@@ -131,6 +149,9 @@ screenshots between every tap.
   tap, scroll, type, wait, screenshot) which do not need it.
 - The panel shows a different simulator — call `sim_start({ udid })` again with
   the device you want; the tab follows that device.
+- `note=this simulator is also used by another session` — the two sessions
+  share one UDID. Run `sim_create({ from, app })` and start the returned device
+  to test in parallel.
 - `sim_keyboard` fails — focus a text field with `sim_tap` first.
 - Tap misses — re-read `sim_ui`; layouts can shift after the keyboard or a
   transition. Prefer text/id over stored coordinates.

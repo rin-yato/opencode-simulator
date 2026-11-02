@@ -91,10 +91,17 @@ tool targets that device, so two sessions testing two simulators do not have to
 pass a UDID on every call. The default is persisted in the plugin's server
 storage and survives plugin reloads.
 
+Two sessions pointing at the **same UDID** are the same simulator: one screen,
+one app state, one set of taps. To run the same model twice, give each session
+its own device with `sim_create({ from, app })`; it creates a same-model
+simulator, installs the app from the source, and makes the new UDID that
+session's default. The source keeps running.
+
 | Tool | Use |
 |---|---|
 | `sim_devices` | List simulators, states, runtimes, and UDIDs |
 | `sim_boot` | Boot a device headlessly by UDID or name |
+| `sim_create` | Create a same-model copy, optionally install an app from the source, for a parallel session |
 | `sim_start` | Boot if needed, optionally launch an app, and open the Simulator panel on that device |
 | `sim_status` | Device, app, screen size, AXe version, serve-sim port |
 | `sim_ui` | Compact action table; `find` for one control, `mode: "interactive"` for the next action |
