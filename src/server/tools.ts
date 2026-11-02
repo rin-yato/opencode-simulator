@@ -133,7 +133,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 export async function registerTools(
   ctx: Plugin.Context,
   hub: HubOptions,
-  openPanel?: (udid: string) => Promise<boolean>,
+  openPanel?: (udid: string, sessionID: string) => Promise<boolean>,
 ): Promise<void> {
   await ctx.tool.transform((editor) => {
     editor.namespace({
@@ -244,7 +244,7 @@ export async function registerTools(
     editor.add({
       name: "start",
       description:
-        "Start the simulator end to end: boot the device if needed, optionally launch an app, and open the Simulator panel in the current window. Use this when the user wants to see or interact with the simulator.",
+        "Start the simulator end to end: boot the device if needed, optionally launch an app, and open the Simulator panel in the session that called this tool. Use this when the user wants to see or interact with the simulator.",
       input: {
         type: "object",
         properties: {
@@ -272,11 +272,11 @@ export async function registerTools(
           }
 
           if (!openPanel) throw new Error("The Simulator window entry is not available.")
-          const opened = await openPanel(device.udid)
+          const opened = await openPanel(device.udid, context.sessionID)
 
           let port: number | undefined
           if (opened) {
-            const deadline = Date.now() + 15_000
+            const deadline = Date.now() + 8_000
             while (Date.now() < deadline) {
               port = serveSimPort(device.udid)
               if (port) break
@@ -288,10 +288,10 @@ export async function registerTools(
             boot,
             ...(launched ? [`app=${input.app}`, launched] : []),
             !opened
-              ? "panel=requested; if the Simulator tab does not appear, restart OpenCode once to load the updated window code."
+              ? "panel=requested; the tab opens in the calling session's strip. Open that session in a window to see it, or restart OpenCode once if the window code is stale."
               : port
                 ? `panel=opened serve-sim=http://127.0.0.1:${port}`
-                : "panel=opened; serve-sim is still starting. Check the Simulator tab.",
+                : "panel=opened; serve-sim starts when the Simulator tab is shown in the calling session.",
           ]
           return ok(lines.join("\n"), {
             udid: device.udid,

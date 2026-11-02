@@ -2,28 +2,28 @@
 
 Date: 2026-11-02
 Repo: `/Users/yato/Documents/dev/opencode-simulator`
-Status: working local plugin; 16 agent tools, headless-friendly GUI panel.
-Working tree: dirty, not committed.
+Status: working local plugin; 16 agent tools, session-scoped GUI panel.
+Working tree: clean after the session-scoping commit.
 
 ## Where we stopped
 
-The new device tools are implemented and `sim.devices` / `sim.boot` work.
-`sim.start` boots, optionally launches an app, emits an RPC `open` event, and
-waits for an `opened` ack from the window entry. The event/ack path worked once
-(`panel=opened`, 139ms), but it lives in `src/gui.tsx`, which does **not** reload
-with a config touch. After the last plugin reload the old renderer lost the
-subscription; a re-subscribe loop is now in the code but has not been installed
-in the running window.
+`sim.start` boots, optionally launches an app, and asks the window entry to
+open the Simulator tab **for the session that called the tool**. The RPC
+event carries `sessionID` and a per-call `request` id, and the window entry
+matches `ctx.sessions.list()` by session id instead of using whichever session
+is focused when the event arrives. This fixes the panel landing in an unrelated
+session when the user switches away mid-call.
 
-**Next action:** restart OpenCode Desktop once, then call:
+The entry also answers `opened: false` when the calling session's tab is not in
+that window; the server ignores false acks so another window can still claim
+the request. The ack budget is 8s (cold panel + serve-sim start exceeded the
+old 3s).
 
-```ts
-sim_start({ udid: "iPhone 17 Pro", app: "com.melis.app" })
-```
-
-Expect `panel=opened serve-sim=http://127.0.0.1:<port>`. If it still returns
-`panel=requested`, replace the server→window RPC bridge with a main-process
-IPC + loopback HTTP bridge (the current approach is documented below).
+**Known limit:** if the calling session is not the routed one, the tab is
+stored in its strip but not mounted, so serve-sim does not start until the user
+opens that session. The panel then connects and streams normally. AXe/simctl
+tools keep working in the meantime; serve-sim-only features (rotate, software
+keyboard, button fallback) wait for the panel.
 
 The running app is left with iPhone 17 Pro booted, Melis running, and
 Simulator.app hidden by the hub.
@@ -146,11 +146,10 @@ The old Melis `use-simulator` skill's `ui.py` compacting logic was ported into
 - `sim.devices` lists all 11 installed simulators with clean runtime strings.
 - `sim.boot` booted `iPhone 17e` from shutdown in ~33s, then it was shut down
   again to clean up. `sim.boot` on an already-booted device is a no-op.
-- `sim.start` boots and launches the app. The RPC `open` event and `opened`
-  ack worked once after a renderer reload (`panel=opened`, 139ms). After a
-  plugin reload the old renderer lost the subscription; `src/gui.tsx` now
-  re-subscribes in a loop, but the window entry still needs one restart to
-  install it. Until then `sim.start` returns `panel=requested`.
+- `sim.start` boots and launches the app. Verified after the session-scoping
+  change: called while another session was on screen, the tab appeared only in
+  the calling session's strip (`panel=opened`), and the serve-sim port came up
+  once that session was shown.
 - `sim.settings()` lists all settings; setting `appearance=dark` changed the
   live screen, and reading it back returned `dark`.
 - `sim.statusbar()` overrode time/battery/signal, listed the overrides, and
@@ -191,13 +190,21 @@ The old Melis `use-simulator` skill's `ui.py` compacting logic was ported into
 - **`sim.keyboard` needs a focused text field** and the panel open. It detects
   visibility from the AX keyboard keys, so `show`/`hide` are idempotent.
 - **After changing server tool code, touch the global `opencode.jsonc`** to
-  force a plugin reload. GUI bundle changes reload the main process, but the
-  **window entry does not reload** until OpenCode restarts or the window
-  reloads. Changes to `src/gui.tsx` or `src/gui/panel.tsx` need a restart.
-- **`sim.start` needs the window entry.** It emits the `open` RPC event and
-  waits up to 3s for the `opened` ack. The entry re-subscribes when the event
-  stream drops, but after changing `src/gui.tsx` you must restart OpenCode once
-  to install it. Until then the tool returns `panel=requested`.
+  force a plugin reload. The GUI bundle and the window entry reload with the
+  plugin in current OpenCode builds; if a window keeps stale code, restart
+  OpenCode once.
+- **`sim.start` is session-scoped.** The `open` event carries the calling
+  `sessionID` and a per-call `request` id. The window entry opens the tab for
+  that session only, with `background: true`; it never falls back to the
+  focused session. A window that does not own the session answers
+  `opened: false`, and the server ignores false acks because another window may
+  own it. The ack budget is 8s.
+- **If the calling session is not the routed one**, the tab is stored but not
+  mounted, so serve-sim does not start until the user opens that session. AXe
+  and simctl tools still work; serve-sim-only features wait for the panel.
+- **Subagent sessions have no shell tab**, so `sim.start` called from a
+  subagent cannot open a panel today. It starts the device but returns
+  `panel=requested`.
 - **`sim.screenshot` returns a file path**; in Code Mode the image is not
   auto-attached, so read the JPEG path.
 - **Transient empty AX ids right after launch.** Re-read `sim.ui` once.
@@ -225,8 +232,8 @@ restart; touching config only reloads the server and main process.
 
 ## Next steps
 
-1. Restart OpenCode once and verify `sim.start` opens and focuses the Simulator
-   panel, then confirm the `opened` ack path.
+1. Resolve a subagent's session to its parent tab so `sim.start` from a
+   subagent opens the panel in the owning session.
 2. Verify `sim.rotate` on SpringBoard or a rotatable app; otherwise remove or
    document it as serve-sim-only.
 3. Decide whether `sim.start` should target one device (`--single-device`) when
@@ -235,7 +242,7 @@ restart; touching config only reloads the server and main process.
    `ui.py`/`scroll.sh`/`shot.sh`.
 5. Consider `sim.batch` for multi-step flows in one tool call.
 6. Consider lazily starting serve-sim from the server part so `sim.rotate`,
-   `sim.keyboard`, and button fallbacks work with the panel closed.
+   `sim.keyboard`, and button fallbacks work without a mounted panel.
 7. Consider returning the screenshot as attached image content reliably; today
    Code Mode only surfaces the text path.
 8. Add a small smoke-test script for `status`/`ui`/`tap`/`wait`.

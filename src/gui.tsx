@@ -64,16 +64,28 @@ export default Plugin.define({
       },
     }))
 
-    const client = ctx.client.rpc(SIMULATOR_RPC)
+    // Read the client where it is used: the plugin server replaces it on reload,
+    // and a client captured at setup then rejects every call.
+    const client = () => ctx.client.rpc(SIMULATOR_RPC)
     let stopped = false
 
-    const handleOpen = (event: { data?: { udid?: unknown } }) => {
-      const session = ctx.sessions.current() ?? ctx.sessions.list()[0]
-      if (!session) return
-      ctx.layout.open(`${ctx.id}:device`, session)
-      const udid = typeof event.data?.udid === "string" ? event.data.udid : ""
+    const handleOpen = (event: { data?: { request?: unknown; sessionID?: unknown; udid?: unknown } }) => {
+      const request = typeof event.data?.request === "string" ? event.data.request : ""
+      if (!request) return
+      const sessionID = typeof event.data?.sessionID === "string" ? event.data.sessionID : ""
+      // Only the window that owns the calling session's tab may open the panel.
+      // Never fall back to whichever session happens to be focused: the user may
+      // have moved to another session while the tool was running.
+      const session = ctx.sessions.list().find((candidate) => candidate.id === sessionID)
+      if (!session) {
+        void client().opened({ request, opened: false }).catch(() => {})
+        return
+      }
+      ctx.layout.open(`${ctx.id}:device`, session, { background: true })
       const location = session.location
-      void client.opened({ udid }, location ? { location } : undefined).catch(() => {})
+      void client()
+        .opened({ request, opened: true }, location ? { location } : undefined)
+        .catch(() => {})
     }
 
     // The RPC event stream drops when the server/plugin restarts. Re-subscribe
@@ -81,7 +93,7 @@ export default Plugin.define({
     void (async () => {
       while (!stopped && !ctx.signal.aborted) {
         try {
-          for await (const event of client.events.subscribe("open", { signal: ctx.signal })) {
+          for await (const event of client().events.subscribe("open", { signal: ctx.signal })) {
             handleOpen(event)
           }
         } catch {}

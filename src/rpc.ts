@@ -4,6 +4,10 @@ import type { Rpc } from "@opencode/plugin"
  * Shared between the server side (which emits) and the window entry (which
  * opens the panel). The event travels over the OpenCode event stream, so no
  * extra local server is needed.
+ *
+ * `sessionID` is the session that called the tool: the window entry must open
+ * the tab in that session's strip, never in whichever session is focused when
+ * the event arrives. `request` ties the ack to the exact call.
  */
 export const SIMULATOR_RPC = {
   id: "opencode-simulator",
@@ -12,9 +16,10 @@ export const SIMULATOR_RPC = {
       input: {
         type: "object",
         properties: {
-          udid: { type: "string" },
+          request: { type: "string" },
+          opened: { type: "boolean" },
         },
-        required: ["udid"],
+        required: ["request", "opened"],
         additionalProperties: false,
       },
       output: {
@@ -29,9 +34,11 @@ export const SIMULATOR_RPC = {
       schema: {
         type: "object",
         properties: {
+          request: { type: "string" },
+          sessionID: { type: "string" },
           udid: { type: "string" },
         },
-        required: ["udid"],
+        required: ["request", "sessionID", "udid"],
         additionalProperties: false,
       },
     },
