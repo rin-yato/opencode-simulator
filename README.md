@@ -8,7 +8,7 @@
 </div>
 
 <p align="center">
-  <img src="./screenshot.png" alt="The Simulator panel open in OpenCode Desktop" width="560" />
+  <img src="./screenshot.png" alt="An agent driving an iOS app in the Simulator panel" width="900" />
 </p>
 
 ## What you get
