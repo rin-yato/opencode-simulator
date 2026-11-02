@@ -79,18 +79,33 @@ You can also open **Simulator** from the side-panel menu or the command palette.
 ### Two sessions, same iPhone model
 
 A simulator is a UDID. Two sessions on the same UDID share one screen, app
-state, and set of taps. Give each session its own copy:
+state, and set of taps. You do not have to manage that: when the only candidate
+device is already used by another session, `sim_start` copies it and gives the
+new session its own device.
+
+```text
+sim_start({ app: "com.example.app", label: "create order flow" })   # session 1
+sim_start({ app: "com.example.app", label: "store profile" })       # session 2
+```
+
+The session that already owns the device keeps it. The other gets
+`iPhone 17 Pro — store profile` instead of adding another "Copy 2". The copy
+starts with a fresh install. To choose the source or name yourself, use
+`sim_create` first:
 
 ```text
 sim_create({ from: "iPhone 17 Pro", app: "com.example.app" })
 sim_start()
 ```
 
-The copy starts with a fresh install. Delete it when the parallel work is done:
+Delete the copy when the parallel work is done:
 
 ```text
 sim_delete({ udid: "iPhone 17 Pro Copy" })
 ```
+
+Passing the same `udid` to both sessions is still possible; that is an explicit
+choice to share.
 
 ## Tools
 

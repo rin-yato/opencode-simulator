@@ -8,6 +8,7 @@ import {
   type Device,
 } from "../devices"
 import { launchApp } from "../actions"
+import { copyDeviceName } from "../copy-name"
 import { serveSimPort } from "../serve-sim"
 import {
   currentDevice,
@@ -43,6 +44,7 @@ interface DeleteInput {
 interface StartInput {
   readonly udid?: string
   readonly app?: string
+  readonly label?: string
 }
 
 interface LaunchInput {
@@ -52,15 +54,80 @@ interface LaunchInput {
   readonly args?: readonly string[]
 }
 
-const uniqueDeviceName = (base: string, devices: readonly Device[]): string => {
-  const taken = new Set(devices.map((device) => device.name))
-  let name = `${base} Copy`
-  let index = 2
-  while (taken.has(name)) name = `${base} Copy ${index++}`
-  return name
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+let copyLock: Promise<unknown> = Promise.resolve()
+
+/**
+ * Serialize automatic copies. Two sessions starting at the same moment would
+ * otherwise list the same devices and both choose the same copy name.
+ */
+const withCopyLock = <T>(task: () => Promise<T>): Promise<T> => {
+  const next = copyLock.then(task, task)
+  copyLock = next.catch(() => {})
+  return next
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+interface StartTarget {
+  readonly device: Device
+  readonly copiedFrom?: Device
+}
+
+/**
+ * Resolve the device for `sim_start`, relaxing the "choose one" error when
+ * several simulators are already booted. A new session should not be blocked
+ * just because previous sessions left their devices running: it takes an
+ * unowned one, or the first one as the source for its own copy.
+ */
+const pickStartDevice = async (
+  simulator: SimulatorContext,
+  context: ToolRuntime,
+  requested?: string,
+): Promise<Device> => {
+  try {
+    return await startDevice(simulator, context, requested)
+  } catch (cause) {
+    if (requested?.trim() || simulator.sessions.pick(context.sessionID)) throw cause
+    const booted = (await listDevices({ signal: context.signal })).filter(
+      (device) => device.state === "Booted",
+    )
+    if (booted.length < 2) throw cause
+    return (
+      booted.find(
+        (device) => simulator.sessions.owners(device.udid, context.sessionID).length === 0,
+      ) ?? booted[0]!
+    )
+  }
+}
+
+/**
+ * Choose the device for `sim_start`.
+ *
+ * An explicit UDID is honored even when another session uses it: sharing is an
+ * explicit choice. Without one, the device is claimed for the calling session.
+ * If another session already owns it, a copy is made so both sessions test in
+ * parallel instead of sharing one screen and one set of taps.
+ */
+const startTarget = async (
+  simulator: SimulatorContext,
+  context: ToolRuntime,
+  requested?: string,
+  label?: string,
+): Promise<StartTarget> => {
+  const device = await pickStartDevice(simulator, context, requested)
+  if (requested?.trim()) return { device }
+  if (await simulator.sessions.claim(context.sessionID, device.udid)) return { device }
+
+  const purpose = label?.trim() || (await simulator.sessionTitle?.(context.sessionID))
+  const copy = await withCopyLock(async () => {
+    const devices = await listDevices({ signal: context.signal })
+    return createDeviceFrom(device, copyDeviceName(device, purpose, devices), {
+      signal: context.signal,
+    })
+  })
+  await simulator.sessions.claim(context.sessionID, copy.udid)
+  return { device: copy, copiedFrom: device }
+}
 
 const waitForHub = async (udid: string): Promise<number | undefined> => {
   const deadline = Date.now() + 8_000
@@ -152,7 +219,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
     execute: define(async (input: CreateInput, context: ToolRuntime) => {
       const source = await startDevice(simulator, context, input.from)
       const devices = await listDevices({ signal: context.signal })
-      const name = input.name?.trim() || uniqueDeviceName(source.name, devices)
+      const name = input.name?.trim() || copyDeviceName(source, undefined, devices)
       if (devices.some((device) => device.name === name)) {
         throw new Error(`A simulator named "${name}" already exists. Pass another name.`)
       }
@@ -228,27 +295,53 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
   editor.add({
     name: "start",
     description:
-      "Start the simulator end to end: boot the device if needed, optionally launch an app, and open the Simulator panel in the session that called this tool. Use this when the user wants to see or interact with the simulator.",
+      "Start the simulator end to end: boot the device if needed, optionally launch an app, and open the Simulator panel in the session that called this tool. Omitting udid gives the session its own device; if another session already owns the only candidate, a copy is created so the two sessions do not share one simulator. Pass label to name that copy after the flow under test.",
     input: {
       type: "object",
       properties: {
         udid: UDID_SCHEMA,
         app: {
           type: "string",
-          description: "Optional bundle id to launch after boot, e.g. com.example.app.",
+          description:
+            "Optional bundle id to launch after boot, e.g. com.example.app. When sim_start has to copy a device, it installs this app from the source first.",
+        },
+        label: {
+          type: "string",
+          description:
+            "Optional short purpose for this session's simulator, e.g. 'create order flow' or 'store profile settings'. Used only when sim_start has to copy another session's device; the copy is named '<model> — <label>'. Defaults to the session title when omitted.",
         },
       },
       additionalProperties: false,
     },
     options: SIM_OPTIONS,
     execute: define(async (input: StartInput, context: ToolRuntime) => {
-      const device = await startDevice(simulator, context, input.udid)
-      const shared = simulator.sessions.owners(device.udid, context.sessionID).length > 0
+      const { device, copiedFrom } = await startTarget(simulator, context, input.udid, input.label)
+      const shared =
+        !copiedFrom && simulator.sessions.owners(device.udid, context.sessionID).length > 0
       const boot = await bootDevice(device, { signal: context.signal })
+
+      let installed = ""
+      let installError = ""
+      if (copiedFrom && input.app) {
+        try {
+          const path = await installAppFrom(device.udid, copiedFrom.udid, input.app, {
+            signal: context.signal,
+          })
+          installed = `app=${input.app} (installed from ${copiedFrom.name}: ${path})`
+        } catch (cause) {
+          installError = `app=install failed: ${
+            cause instanceof Error ? cause.message : String(cause)
+          }`
+        }
+      }
+
       await simulator.sessions.remember(context.sessionID, device.udid)
 
+      // A copy starts with a fresh install, so launch only after installing the
+      // requested app. When the install failed, launching would only add a
+      // second, less useful error.
       let launched = ""
-      if (input.app) {
+      if (input.app && !installError) {
         launched = await launchApp(device.udid, input.app, {
           signal: context.signal,
           terminate: false,
@@ -261,10 +354,17 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
 
       const lines = [
         boot,
+        ...(copiedFrom
+          ? [
+              `copied=${device.name} (${device.udid}) from ${copiedFrom.name} (${copiedFrom.udid}); the source stays with its session`,
+            ]
+          : []),
+        ...(installed ? [installed] : []),
+        ...(installError ? [installError] : []),
         ...(launched ? [`app=${input.app}`, launched] : []),
         ...(shared
           ? [
-              "note=this simulator is also used by another session; run sim_create to get an independent copy of the same model.",
+              "note=this simulator is also used by another session; pass that udid only when sharing is intended.",
             ]
           : []),
         !opened
@@ -278,6 +378,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
         name: device.name,
         port,
         panel: opened,
+        ...(copiedFrom ? { copiedFrom: copiedFrom.udid } : {}),
       })
     }),
   })

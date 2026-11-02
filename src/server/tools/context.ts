@@ -35,6 +35,8 @@ export interface SimulatorContext {
   readonly hub: HubOptions
   readonly sessions: SessionDevices
   readonly openPanel?: OpenPanel
+  /** Best-effort session title, used to name an automatic copy when no label is given. */
+  readonly sessionTitle?: (sessionID: string) => Promise<string | undefined>
 }
 
 export const SIM_OPTIONS = { namespace: "sim", codemode: true } as const

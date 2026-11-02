@@ -8,7 +8,8 @@ All tools are in the `sim` namespace. In Code Mode call them as
 - `udid` accepts a UDID, an exact device name, or a unique name fragment.
   Ambiguous matches fail and list the candidates.
 - Omitting `udid` targets the device the session started (`sim_start` or
-  `sim_boot`), then the only booted simulator.
+  `sim_boot`), then the only booted simulator. `sim_start` also claims the
+  device: if another session already owns it, a copy is created instead.
 - Failures return `ERROR: <message>` in the content and `metadata.ok: false`.
   They do not throw across the tool boundary.
 - Every result includes `metadata.udid` when a device was resolved.
@@ -74,6 +75,7 @@ Boot, optionally launch an app, and open the panel in the calling session.
 |---|---|---|---|
 | `udid` | string | session device | Device to start |
 | `app` | string | none | Bundle id to launch after boot |
+| `label` | string | none | Purpose for an automatic copy, e.g. `create order flow` |
 
 Returns the boot result, the launched app when requested, and one of:
 
@@ -81,9 +83,21 @@ Returns the boot result, the launched app when requested, and one of:
 - `panel=opened; serve-sim starts when the Simulator tab is shown...`
 - `panel=requested...` when the calling session is not mounted
 
-When another session already owns the UDID, the result includes
-`note=this simulator is also used by another session`. Create a copy with
-`sim_create` for parallel work.
+Without an explicit `udid`, the session claims the chosen device. If another
+session already owns it, `sim_start` creates a copy with the same model and
+runtime, installs `app` from the source when given, and reports the copy as
+`copied=<name> (<udid>) from <source>`. With `label`, the copy is named
+`<model> — <label>` (for example `iPhone 17 Pro — create order flow`); without
+one, the session title is used when available, then the `<source> Copy`
+convention. App data is not copied.
+This keeps two sessions from sharing one screen and one set of taps by default.
+When several simulators are already booted, an unowned one is preferred; if
+every booted device belongs to another session, the first is used as the copy
+source. `label` only affects a copy, not a device the session already owns.
+
+Passing a UDID that another session owns is treated as an explicit choice to
+share; the result then includes
+`note=this simulator is also used by another session`.
 
 ### `sim_launch`
 

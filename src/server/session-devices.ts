@@ -64,6 +64,21 @@ export class SessionDevices {
     return this.#devices.size
   }
 
+  /**
+   * Make `udid` the session's default unless another session already owns it.
+   *
+   * The ownership scan and the map update run without awaiting, so two sessions
+   * starting at the same time cannot both adopt one simulator: the first call
+   * claims it, the second sees the owner and has to pick or create another.
+   */
+  async claim(sessionID: string, udid: string): Promise<boolean> {
+    for (const [other, owned] of this.#devices) {
+      if (owned === udid && other !== sessionID) return false
+    }
+    await this.remember(sessionID, udid)
+    return true
+  }
+
   /** Make `udid` the session's default and drop the least recently used entry. */
   async remember(sessionID: string, udid: string): Promise<void> {
     if (this.#devices.get(sessionID) === udid) return
