@@ -71,6 +71,30 @@ describe("SessionDevices", () => {
     expect(sessions.owners("missing")).toEqual([])
   })
 
+  test("claims an unowned device for a session", async () => {
+    const sessions = new SessionDevices()
+    expect(await sessions.claim("ses_1", "udid-1")).toBe(true)
+    expect(sessions.pick("ses_1")).toBe("udid-1")
+    expect(await sessions.claim("ses_1", "udid-1")).toBe(true)
+  })
+
+  test("refuses a device another session already owns", async () => {
+    const sessions = new SessionDevices({ ses_1: "shared", ses_2: "shared" })
+    expect(await sessions.claim("ses_2", "shared")).toBe(false)
+    expect(await sessions.claim("ses_3", "shared")).toBe(false)
+    expect(sessions.pick("ses_2")).toBe("shared")
+    expect(sessions.pick("ses_3")).toBeUndefined()
+  })
+
+  test("only one of two simultaneous claims wins", async () => {
+    const sessions = new SessionDevices()
+    const first = sessions.claim("ses_1", "shared")
+    const second = sessions.claim("ses_2", "shared")
+    expect(await first).toBe(true)
+    expect(await second).toBe(false)
+    expect(sessions.owners("shared")).toEqual(["ses_1"])
+  })
+
   test("survives a storage failure", async () => {
     const storage: StorageLike = {
       get: async () => {

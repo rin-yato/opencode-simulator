@@ -78,6 +78,16 @@ Simulator.app.
 A simulator is a UDID. Two sessions on one UDID share the screen, app state,
 and input. The plugin does not try to multiplex them.
 
+`sim_start` claims its device for the calling session. The claim is atomic
+inside the plugin process: it checks ownership and writes the session entry
+without awaiting, so two sessions starting at once cannot both adopt one
+simulator. When the chosen device is already owned by another session,
+`sim_start` creates a copy with the same model and runtime, installs the
+requested app bundle from the source, and claims the copy. A `label` such as
+`create order flow` names the copy `<model> — <label>` instead of `<source>
+Copy`; without one, the session title is used when available. An explicit
+`udid` skips the check, so sharing is a deliberate choice.
+
 What is scoped:
 
 | Scope | Where | Bound |
@@ -91,10 +101,12 @@ What is scoped:
 `sim_start` and `sim_boot` write the session default. Every tool that omits
 `udid` reads it before falling back to the only booted simulator.
 
-For parallel work on the same model, `sim_create` makes a new UDID. It copies
-the device type and runtime, boots the copy, and installs the requested app
-bundle from the source. It does not copy app data: `simctl clone` would, but it
-requires the source to be shut down.
+For parallel work on the same model, `sim_start` creates a copy automatically
+when another session owns the candidate device. `sim_create` does the same
+explicitly, with a chosen source and name. It copies the device type and
+runtime, boots the copy, and installs the requested app bundle from the source.
+It does not copy app data: `simctl clone` would, but it requires the source to
+be shut down.
 
 ## Lifecycle and cleanup
 
@@ -120,8 +132,9 @@ Bounded local state:
   when the server plugin loads. Logs older than a week are removed.
 - `sim_status` ignores a serve-sim state file whose pid is gone.
 
-Created simulators are the exception. `sim_create` makes a real multi-gigabyte
-device image. It is never deleted automatically; `sim_delete` is explicit.
+Created simulators are the exception. `sim_create` and the automatic copy in
+`sim_start` make a real multi-gigabyte device image. It is never deleted
+automatically; `sim_delete` is explicit.
 
 ## Why serve-sim runs under Node
 
@@ -144,6 +157,7 @@ does not use `process.execPath`, `ELECTRON_RUN_AS_NODE`, or `npx`.
 | `src/server/tools/input.ts` | `tap`, `scroll`, `type`, `button`, `rotate` |
 | `src/server/tools/settings.ts` | `settings`, `keyboard`, `statusbar` |
 | `src/server/devices.ts` | `simctl` device list, match, boot, create, delete |
+| `src/server/copy-name.ts` | Semantic copy names from a device and label |
 | `src/server/accessibility.ts` | AX tree parsing and compaction |
 | `src/server/actions.ts` | Input actions and app launch |
 | `src/server/screenshot.ts` | Capture, resize, retention |
@@ -162,6 +176,7 @@ does not use `process.execPath`, `ELECTRON_RUN_AS_NODE`, or `npx`.
 
 ## Tests
 
-Bun tests cover the pure pieces: device matching, the session-device cap and
-forget behavior, and the localStorage session cap. There is no automated test
-for serve-sim or Electron; those require a real macOS session.
+Bun tests cover the pure pieces: device matching, copy naming, the
+session-device cap, claim and forget behavior, and the localStorage session
+cap. There is no automated test for serve-sim or Electron; those require a real
+macOS session.

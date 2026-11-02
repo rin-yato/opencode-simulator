@@ -22,36 +22,60 @@ Tool names below are the agent-facing aliases. In Code Mode they are
 ## Start
 
 1. `sim_devices` — list simulators, state, runtime, and UDID.
-2. `sim_start({ udid?, app? })` — boot if needed, launch the app by bundle id,
-   and open the Simulator panel **in the calling session**. It returns
-   `panel=...` and the serve-sim URL.
+2. `sim_start({ udid?, app?, label? })` — boot if needed, launch the app by
+   bundle id, and open the Simulator panel **in the calling session**. It
+   returns `panel=...` and the serve-sim URL.
 3. `sim_status` — confirm device, app, screen size, AXe, and serve-sim.
 
 `udid` accepts a UDID, an exact device name, or a unique name fragment.
 Ambiguous fragments fail instead of guessing, so `iPhone 17` will not silently
-pick one of two copies. Every tool remembers the device this session started:
-after `sim_start({ udid: "iPhone 17e" })`, `sim_ui()` and `sim_tap()` default to
-17e even if other simulators are booted. Pass `udid` only to target another
-device. `sim_boot` boots without opening the panel. `sim_start` is the normal
-entry.
+pick one of two copies. Every tool remembers the device this session started.
+`sim_start` also claims its device for the session: when the only candidate is
+already owned by another session, it creates a copy automatically and installs
+`app` from the source, so two sessions never share one screen by accident.
+Pass `label` with a short purpose from the task (`"create order flow"`,
+`"store profile settings"`) to name that copy semantically; the device becomes
+`iPhone 17 Pro — create order flow`. If `label` is omitted, the session title is
+used when available, falling back to `<source> Copy`. Pass `udid` only to
+target a specific device; passing a UDID another session owns is an explicit
+choice to share it. `sim_boot` boots without opening the panel. `sim_start` is
+the normal entry.
 
 ## Parallel devices
 
 A simulator is one UDID. Two sessions targeting the same UDID share one screen,
-one app state, and one set of taps: they will fight. For the same model in two
-sessions, give each session its own simulator:
+one app state, and one set of taps: they will fight. `sim_start` prevents that
+by default:
+
+```
+sim_start({ app: "com.example.app", label: "create order flow" })
+sim_start({ app: "com.example.app", label: "store profile settings" })
+```
+
+The session that already owns the device keeps it; the other session gets a
+copy named after its `label`, or after the session title when no label is given.
+The copy uses the candidate's model and runtime, installs `app` from it, and
+becomes that session's default. App data is not copied; the copy starts with a
+fresh install. If several simulators are already booted, an unowned one is
+preferred; when all belong to other sessions, the first booted device is the
+copy source.
+
+Choose a label from what the session is actually testing. It should be short,
+specific, and readable in `sim_devices`: `"create order flow"`,
+`"store profile settings"`, `"checkout with coupon"`. Avoid `"test"`,
+`"copy"`, or repeating the model name.
+
+Use `sim_create` when you want to choose the source or name yourself:
 
 ```
 sim_create({ from: "iPhone 17 Pro", app: "com.example.app" })
-sim_start()            # defaults to the new device
+sim_start()
 ```
 
-`sim_create` makes a new device with the source's model and runtime, installs
-the app from the source, and makes the new UDID this session's default. The
-source keeps running and its data is untouched. App data is not copied; the
-new device starts with a fresh install. If `sim_start` answers
-`note=this simulator is also used by another session`, create a copy before
-testing.
+The source keeps running and its data is untouched. If you pass a `udid` that
+another session owns, `sim_start` answers
+`note=this simulator is also used by another session`; that is intentional
+sharing.
 
 When the parallel work is done, delete the copy with
 `sim_delete({ udid })`. It shuts the device down first and refuses if another
@@ -154,9 +178,9 @@ screenshots between every tap.
   tap, scroll, type, wait, screenshot) which do not need it.
 - The panel shows a different simulator — call `sim_start({ udid })` again with
   the device you want; the tab follows that device.
-- `note=this simulator is also used by another session` — the two sessions
-  share one UDID. Run `sim_create({ from, app })` and start the returned device
-  to test in parallel.
+- `note=this simulator is also used by another session` — you passed a UDID that
+  another session owns, so sharing is intentional. Omit `udid` next time to let
+  `sim_start` create an independent copy.
 - `sim_keyboard` fails — focus a text field with `sim_tap` first.
 - Tap misses — re-read `sim_ui`; layouts can shift after the keyboard or a
   transition. Prefer text/id over stored coordinates.
