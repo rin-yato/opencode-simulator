@@ -26,7 +26,10 @@ Multiple sessions and devices are independent: panes are keyed by window and
 session, hubs by device, and the device request by session. Switching sessions
 reattaches the panel to that session's device. Two windows can stream two
 devices at once (verified with two concurrent serve-sim processes, each
-`--single-device` on a different booted simulator).
+`--single-device` on a different booted simulator). The server part also
+remembers each session's device in plugin storage, so omitting `udid` on
+`sim_ui`, `sim_tap`, `sim.status`, etc. targets that session's simulator even
+when several are booted.
 
 The entry answers `opened: false` when the calling session's tab is not in that
 window; the server ignores false acks so another window can still claim the
@@ -176,6 +179,10 @@ The old Melis `use-simulator` skill's `ui.py` compacting logic was ported into
 - Concurrent serving verified: two serve-sim instances, each
   `--single-device` on a different booted simulator, both reached `/readyz` and
   reported their own device in `__SIM_PREVIEW__` while running together.
+- Per-session default verified with both simulators booted:
+  `sim_start({ udid: "iPhone 17e" })` then `sim_status()` (no udid) reported
+  17e, and switching back to 17 Pro made it report 17 Pro. The GUI tab followed
+  the same device.
 - The bundled `simulator` skill is registered through `ctx.skill.transform`,
   appears in the model's skill list, and loads with the full guidance. Its
   description explicitly forbids `xcrun simctl`, Xcode, and ad-hoc scripts.
@@ -242,6 +249,11 @@ The old Melis `use-simulator` skill's `ui.py` compacting logic was ported into
   routed session's panel is mounted in a window, so background sessions keep
   working through AXe-backed tools; `sim.rotate`/`sim.keyboard` in a
   background session still need its tab shown once.
+- **Tools default to the session's device.** `sim_boot` and `sim_start` store
+  the UDID under `session-devices` in the plugin server storage. Every tool
+  that omits `udid` resolves that device first, then falls back to the only
+  booted simulator. This is what keeps two sessions from grabbing each other's
+  simulator when both are booted.
 - **If the calling session is not the routed one**, the tab is stored but not
   mounted, so serve-sim does not start until the user opens that session. AXe
   and simctl tools still work; serve-sim-only features wait for the panel.

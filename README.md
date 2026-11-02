@@ -86,6 +86,11 @@ through the AXe-backed tools while its tab is closed.
 The server part registers a `sim` namespace. Tools are available immediately;
 no MCP server and no extra config.
 
+Each session remembers the device it booted or started. Omitting `udid` on any
+tool targets that device, so two sessions testing two simulators do not have to
+pass a UDID on every call. The default is persisted in the plugin's server
+storage and survives plugin reloads.
+
 | Tool | Use |
 |---|---|
 | `sim_devices` | List simulators, states, runtimes, and UDIDs |

@@ -29,7 +29,11 @@ Tool names below are the agent-facing aliases. In Code Mode they are
 
 `udid` accepts an exact device name (for example `iPhone 17 Pro`) or a UDID. It
 never fuzzy-matches, so `iPhone 17 Pro` will not pick `iPhone 17 Pro 2`.
-`sim_boot` boots without opening the panel. `sim_start` is the normal entry.
+Every tool remembers the device this session started: after
+`sim_start({ udid: "iPhone 17e" })`, `sim_ui()` and `sim_tap()` default to
+17e even if other simulators are booted. Pass `udid` only to target another
+device. `sim_boot` boots without opening the panel. `sim_start` is the normal
+entry.
 
 The panel is session-scoped. It appears in the strip of the session that
 called the tool, even if the user has switched to another session. It is also

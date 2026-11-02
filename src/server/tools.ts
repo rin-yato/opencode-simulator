@@ -108,7 +108,8 @@ interface LaunchInput extends Common {
 
 const udid = {
   type: "string",
-  description: "Simulator UDID or exact name. Defaults to the only booted simulator.",
+  description:
+    "Simulator UDID or exact name. Defaults to the device this session started, else the only booted simulator.",
 } as const
 
 const options = { namespace: "sim", codemode: true } as const
@@ -135,6 +136,31 @@ export async function registerTools(
   hub: HubOptions,
   openPanel?: (udid: string, sessionID: string) => Promise<boolean>,
 ): Promise<void> {
+  // Each session remembers the simulator it booted or started. Omitting `udid`
+  // then targets that device, so two sessions can test two simulators at once
+  // without passing a UDID on every call.
+  const SESSION_DEVICES = "session-devices"
+  const remembered = new Map<string, string>()
+  try {
+    const stored = await ctx.storage.get(SESSION_DEVICES)
+    if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+      for (const [key, value] of Object.entries(stored as Record<string, unknown>)) {
+        if (typeof value === "string" && value) remembered.set(key, value)
+      }
+    }
+  } catch {}
+
+  const pick = (sessionID: string, requested?: string): string | undefined => {
+    const explicit = requested?.trim()
+    return explicit || remembered.get(sessionID)
+  }
+
+  const remember = async (sessionID: string, device: string) => {
+    if (remembered.get(sessionID) === device) return
+    remembered.set(sessionID, device)
+    await ctx.storage.set(SESSION_DEVICES, Object.fromEntries(remembered)).catch(() => {})
+  }
+
   await ctx.tool.transform((editor) => {
     editor.namespace({
       name: "sim",
@@ -155,7 +181,7 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as Common
-          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           const snapshot = await readSnapshot(device.udid, { signal: context.signal })
           const port = serveSimPort(device.udid)
           let axeVersion = "missing"
@@ -223,7 +249,7 @@ export async function registerTools(
     editor.add({
       name: "boot",
       description:
-        "Boot a simulator by UDID or name, without opening Simulator.app. Defaults to the only booted device, or the only installed device. Use sim_start to also open the Simulator panel.",
+        "Boot a simulator by UDID or name, without opening Simulator.app. Defaults to this session's device, then the only booted device, then the only installed device. Use sim_start to also open the Simulator panel.",
       input: {
         type: "object",
         properties: { udid },
@@ -233,8 +259,9 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as BootInput
-          const device = await resolveStartDevice(input.udid, { signal: context.signal })
+          const device = await resolveStartDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           const output = await bootDevice(device, { signal: context.signal })
+          await remember(context.sessionID, device.udid)
           return ok(output, { udid: device.udid, name: device.name })
         } catch (cause) {
           return fail(cause)
@@ -261,8 +288,9 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as StartInput
-          const device = await resolveStartDevice(input.udid, { signal: context.signal })
+          const device = await resolveStartDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           const boot = await bootDevice(device, { signal: context.signal })
+          await remember(context.sessionID, device.udid)
 
           let launched = ""
           if (input.app) {
@@ -328,7 +356,7 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as UiInput
-          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           const snapshot = await readSnapshot(device.udid, {
             includeAll: input.mode === "all",
             signal: context.signal,
@@ -369,7 +397,7 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as TapInput
-          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           const point = input.x !== undefined || input.y !== undefined
           const selector = Boolean(input.id || input.label || input.value)
           const modes = [point, selector, Boolean(input.text)].filter(Boolean).length
@@ -450,7 +478,7 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as ScrollInput
-          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           const result = await scroll(device.udid, input.direction, input.amount ?? 1, {
             ...hub,
             signal: context.signal,
@@ -480,7 +508,7 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as TypeInput
-          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           await typeText(device.udid, input.text, { ...hub, signal: context.signal })
           if (input.submit) {
             await run("axe", ["key", "40", "--udid", device.udid], {
@@ -517,7 +545,7 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as ButtonInput
-          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           await pressButton(device.udid, input.button, input.duration, {
             ...hub,
             signal: context.signal,
@@ -548,7 +576,7 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as RotateInput
-          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           await rotate(device.udid, input.orientation, { ...hub, signal: context.signal })
           return ok(`rotated ${input.orientation}`, { udid: device.udid })
         } catch (cause) {
@@ -582,7 +610,7 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as SettingsInput
-          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           if (!input.setting) {
             const output = await readSettings(device.udid, { ...hub, signal: context.signal })
             return ok(output, { udid: device.udid })
@@ -626,7 +654,7 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as KeyboardInput
-          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           const output = await softwareKeyboard(device.udid, input.state ?? "toggle", {
             ...hub,
             signal: context.signal,
@@ -664,7 +692,7 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as StatusBarToolInput
-          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           const output = await statusBar(device.udid, input, { signal: context.signal })
           return ok(output, { udid: device.udid })
         } catch (cause) {
@@ -690,7 +718,7 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as ScreenshotInput
-          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           const result = await screenshot(device.udid, {
             ...hub,
             signal: context.signal,
@@ -743,7 +771,7 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as WaitInput
-          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           const deadline = Date.now() + (input.timeout ?? 5) * 1_000
           const interval = (input.interval ?? 0.3) * 1_000
           let last = ""
@@ -790,7 +818,7 @@ export async function registerTools(
       execute: async (raw, context) => {
         try {
           const input = raw as LaunchInput
-          const device = await resolveDevice(input.udid, { signal: context.signal })
+          const device = await resolveDevice(pick(context.sessionID, input.udid), { signal: context.signal })
           const result = await launchApp(device.udid, input.bundleId, {
             ...hub,
             signal: context.signal,
