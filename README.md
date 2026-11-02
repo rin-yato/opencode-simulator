@@ -11,6 +11,10 @@ It also has a server part that registers a `sim` tool namespace with OpenCode:
 device listing/boot/start, accessibility reads and input, settings, keyboard,
 status bar, screenshots, waits, and app launch. No MCP server is involved.
 
+The same plugin ships a `simulator` skill, so a fresh project gets the tools and
+the instructions for using them together. The skill tells the agent to use
+`sim_*` instead of `xcrun simctl`, Xcode, or ad-hoc scripts.
+
 `serve-sim` is run with the system `node`, not Electron. Its native capture
 addon is signed by Expo, and Electron's hardened runtime refuses to map a
 foreign Team ID. Running it under Electron is what produces:
@@ -105,6 +109,21 @@ sim_ui({ find: "Afnan 9pm" })
 Prefer `sim_ui` and `sim_wait` over screenshots. Screenshots cost image tokens;
 a compact text read is a few hundred.
 
+## Bundled skill
+
+`src/index.ts` registers the **Simulator** skill (`simulator`) through
+`ctx.skill.transform`, reading `src/skills/simulator.md`. It is advertised to
+every agent in every project where the plugin is loaded, and it is scoped to
+the project's plugin instance.
+
+The skill is the contract for iOS UI work: use `sim_*` for boot, UI reads, taps,
+scrolling, typing, screenshots, settings, and status bar; never drive the
+simulator with `xcrun simctl`, `axe`, `idb`, Xcode, or generated shell scripts.
+It also documents the normal loop, selector rules, and failure modes.
+
+Edit `src/skills/simulator.md` to change the guidance, then touch the global
+config (or run `bun run build` for GUI changes) to reload the plugin.
+
 ## How it works
 
 - `src/gui.tsx` registers the panel, menu item, and command.
@@ -112,8 +131,9 @@ a compact text read is a few hundred.
 - `src/gui/hub.ts` spawns `serve-sim`, waits for `/readyz`, and reconnects the
   pane when the hub restarts on a new port.
 - `src/gui/panel.tsx` renders the embed and its retry state.
-- `src/index.ts` is the server part. It registers the `sim` tools and the
-  `open` RPC used by `sim_start`.
+- `src/index.ts` is the server part. It registers the `sim` tools, the
+  `simulator` skill, and the `open` RPC used by `sim_start`.
+- `src/skills/simulator.md` is the bundled skill body.
 - `src/rpc.ts` defines that event and the `opened` acknowledgement.
 - `src/gui.tsx` listens for `open` and opens the panel tab.
 - `src/server/devices.ts` lists, matches, and boots devices.
@@ -133,8 +153,8 @@ bun run typecheck
 
 Server tool code is loaded from `src/`; after changing it, touch
 `~/.config/opencode/opencode.jsonc` to force OpenCode to reload the plugin.
-Main-process GUI code reloads with it. Window-entry code (`src/gui.tsx`,
-`src/gui/panel.tsx`) needs an OpenCode restart or window reload.
+Main-process GUI code and the window entry reload with it in current builds; if
+a window keeps stale code, reload the window or restart OpenCode once.
 
 ## Uninstall
 

@@ -138,7 +138,8 @@ export async function registerTools(
   await ctx.tool.transform((editor) => {
     editor.namespace({
       name: "sim",
-      description: "Inspect and control the local iOS Simulator.",
+      description:
+        "Inspect and control the local iOS Simulator. Use these tools instead of xcrun simctl, axe, or Xcode for device and UI work.",
     })
 
     editor.add({

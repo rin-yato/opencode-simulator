@@ -2,8 +2,9 @@
 
 Date: 2026-11-02
 Repo: `/Users/yato/Documents/dev/opencode-simulator`
-Status: working local plugin; 16 agent tools, session-scoped GUI panel.
-Working tree: clean after the session-scoping commit.
+Status: working local plugin; 16 agent tools, session-scoped GUI panel, bundled
+`simulator` skill.
+Working tree: clean after the session-scoping commit; skill added on top.
 
 ## Where we stopped
 
@@ -36,6 +37,9 @@ A personal OpenCode Desktop plugin with two parts:
    using serve-sim in a native `WebContentsView`.
 2. **Server** — a `sim` tool namespace the agent can call directly. No MCP
    server is involved.
+3. **Skill** — a bundled `simulator` skill registered by the server part. It
+   teaches the agent to use `sim_*` instead of `xcrun simctl`, Xcode, or
+   ad-hoc scripts. It ships with the plugin, so every project gets it.
 
 The simulator itself runs on the Mac. The plugin does not stream to a remote
 machine and does not support remote OpenCode servers.
@@ -61,8 +65,9 @@ machine and does not support remote OpenCode servers.
 
 ## Architecture
 
-- `src/index.ts` — server plugin entry; registers the RPC definition and the
-  tools with `ctx.tool.transform`.
+- `src/index.ts` — server plugin entry; registers the `sim` tools, the
+  `simulator` skill, and the `open` RPC.
+- `src/skills/simulator.md` — the bundled skill body.
 - `src/server/tools.ts` — the 16 `sim` tool definitions and JSON schemas.
 - `src/server/ax.ts` — reads `axe describe-ui`, compacts it to a small action
   table, matches rows, and formats output. Falls back to serve-sim's
@@ -150,6 +155,9 @@ The old Melis `use-simulator` skill's `ui.py` compacting logic was ported into
   change: called while another session was on screen, the tab appeared only in
   the calling session's strip (`panel=opened`), and the serve-sim port came up
   once that session was shown.
+- The bundled `simulator` skill is registered through `ctx.skill.transform`,
+  appears in the model's skill list, and loads with the full guidance. Its
+  description explicitly forbids `xcrun simctl`, Xcode, and ad-hoc scripts.
 - `sim.settings()` lists all settings; setting `appearance=dark` changed the
   live screen, and reading it back returned `dark`.
 - `sim.statusbar()` overrode time/battery/signal, listed the overrides, and
@@ -238,8 +246,8 @@ restart; touching config only reloads the server and main process.
    document it as serve-sim-only.
 3. Decide whether `sim.start` should target one device (`--single-device`) when
    several are already booted; today the hub serves every booted device.
-4. Rewrite the Melis `use-simulator` skill to call `sim_*` tools and delete
-   `ui.py`/`scroll.sh`/`shot.sh`.
+4. Remove the old project-local Melis `use-simulator` skill now that the plugin
+   ships `simulator`; keep only project-specific notes if any remain.
 5. Consider `sim.batch` for multi-step flows in one tool call.
 6. Consider lazily starting serve-sim from the server part so `sim.rotate`,
    `sim.keyboard`, and button fallbacks work without a mounted panel.
