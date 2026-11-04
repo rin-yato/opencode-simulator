@@ -21,14 +21,15 @@ const HubState = Schema.Struct({
   pid: Schema.Int,
   port: Schema.Int,
   cli: Schema.String,
+  script: Schema.optional(Schema.String),
   device: Schema.optional(Schema.String),
 })
 
 type HubState = typeof HubState.Type
 
 export interface HubStarted {
-  /** The simulator the hub serves. Undefined for the default (first booted) hub. */
-  readonly device: string | undefined
+  /** The simulator the hub serves. */
+  readonly device: string
   readonly url: string
 }
 
@@ -36,24 +37,24 @@ export interface HubManager {
   /**
    * Start or reuse a hub for one simulator. A device gets its own serve-sim
    * process locked with `--single-device`, so the preview can never stream a
-   * different booted simulator. Omit `device` for the legacy default hub.
+   * different booted simulator.
    */
-  readonly ensure: (device?: string) => Promise<{ readonly url: string }>
+  readonly ensure: (device: string) => Promise<{ readonly url: string }>
   readonly onStarted: (listener: (started: HubStarted) => void) => () => void
   /** Stop the hub for one device. No-op when it never started. */
-  readonly release: (device?: string) => Promise<void>
+  readonly release: (device: string) => Promise<void>
   readonly dispose: () => Promise<void>
 }
 
 interface Slot {
-  /** Undefined for the default hub, which follows whichever device booted first. */
-  readonly device: string | undefined
+  readonly device: string
   /** Cancels a start that is still waiting for the device to boot. */
   readonly abort: AbortController
   child: ChildProcess | null
   port: number | null
   url: string | null
   starting: Promise<{ readonly url: string }> | null
+  releasing: Promise<void> | null
   restartTimer: ReturnType<typeof setTimeout> | null
   restartDelay: number
   startedAt: number
@@ -62,13 +63,14 @@ interface Slot {
   readonly intentionalStops: Set<ChildProcess>
 }
 
-const emptySlot = (device: string | undefined): Slot => ({
+const emptySlot = (device: string): Slot => ({
   device,
   abort: new AbortController(),
   child: null,
   port: null,
   url: null,
   starting: null,
+  releasing: null,
   restartTimer: null,
   restartDelay: RESTART_BASE_MS,
   startedAt: 0,
@@ -95,11 +97,13 @@ export function createHubManager(ctx: MainContext): HubManager {
     const entries: HubState[] = []
     for (const slot of slots.values()) {
       if (!slot.child?.pid || !slot.port) continue
+      const cli = resolveCli(explicitCli)
       entries.push({
         pid: slot.child.pid,
         port: slot.port,
-        cli: resolveCli(explicitCli)?.command ?? "node",
-        ...(slot.device ? { device: slot.device } : {}),
+        cli: cli?.command ?? "node",
+        ...(cli?.args[0] ? { script: cli.args[0] } : {}),
+        device: slot.device,
       })
     }
     stored.set(entries.length > 0 ? entries : null)
@@ -110,7 +114,9 @@ export function createHubManager(ctx: MainContext): HubManager {
     const previous = stored.value
     if (!previous) return
     for (const entry of previous) {
-      if (!isAlive(entry.pid) || !commandLine(entry.pid).includes(HUB_PACKAGE)) continue
+      const command = commandLine(entry.pid)
+      const script = entry.script ?? `${HUB_PACKAGE}.js`
+      if (!isAlive(entry.pid) || !command.includes(script)) continue
       ctx.log.write("warn", "Stopping a simulator hub left behind by a previous run", {
         pid: entry.pid,
         port: entry.port,
@@ -138,7 +144,7 @@ export function createHubManager(ctx: MainContext): HubManager {
   }
 
   const scheduleRestart = (slot: Slot) => {
-    if (stopped) return
+    if (stopped || slot.released) return
     const uptime = Date.now() - slot.startedAt
     if (uptime >= RESTART_RESET_MS) slot.restartDelay = RESTART_BASE_MS
     const delay = slot.restartDelay
@@ -173,9 +179,9 @@ export function createHubManager(ctx: MainContext): HubManager {
       "--port",
       String(port),
       // Locked to the requested device: without this serve-sim streams
-      // whichever simulator booted first, which is the wrong one when the tool
-      // just booted another device.
-      ...(slot.device ? ["--single-device", slot.device] : []),
+      // whichever simulator booted first.
+      "--single-device",
+      slot.device,
     ]
 
     const child = spawn(cli.command, args, {
@@ -209,7 +215,9 @@ export function createHubManager(ctx: MainContext): HubManager {
     child.once("exit", (code, signal) => {
       clearChild(slot, child)
       persist()
-      if (stopped || slot.intentionalStops.delete(child)) return
+      if (stopped || slot.released || slot.starting || slot.intentionalStops.delete(child)) {
+        return
+      }
       ctx.log.write("warn", "simulator hub exited", { device: slot.device, code, signal })
       scheduleRestart(slot)
     })
@@ -220,10 +228,18 @@ export function createHubManager(ctx: MainContext): HubManager {
         reject(new Error(`serve-sim exited before ready (${code ?? signal ?? "unknown"})`))
       })
     })
+    const failed = new Promise<never>((_, reject) => {
+      child.once("error", (cause) => {
+        reject(new Error(`Could not start serve-sim with ${cli.command}: ${cause.message}`))
+      })
+      child.once("close", (code) => {
+        reject(new Error(`serve-sim closed before ready (${code ?? "unknown"})`))
+      })
+    })
     try {
-      await Promise.race([waitForReady(url, slot.abort.signal), exited])
+      await Promise.race([waitForReady(url, slot.device, slot.abort.signal), exited, failed])
     } catch (cause) {
-      await stopSlotChild(slot, child)
+      await stopSlotChild(slot, child).catch(() => {})
       throw cause
     }
 
@@ -241,56 +257,92 @@ export function createHubManager(ctx: MainContext): HubManager {
   const ensureSlot = (slot: Slot) => {
     if (stopped) return Promise.reject(new Error("The simulator hub is stopped."))
     if (slot.url) return Promise.resolve({ url: slot.url })
-    slot.starting ??= startSlot(slot).finally(() => {
-      slot.starting = null
-    })
+    slot.starting ??= startSlot(slot)
+      .catch((cause) => {
+        const message = cause instanceof Error ? cause.message : String(cause)
+        // A port can be taken between reserve and spawn. Retry once on the
+        // startup races that can recover; a missing Node fails immediately.
+        if (
+          slot.released ||
+          stopped ||
+          !/exited before ready|closed before ready|EADDRINUSE|address already in use/i.test(
+            message,
+          )
+        ) {
+          throw cause
+        }
+        return startSlot(slot)
+      })
+      .finally(() => {
+        slot.starting = null
+      })
+      .catch((cause) => {
+        const key = slot.device
+        if (!slot.released && !slot.child && slots.get(key) === slot) slots.delete(key)
+        throw cause
+      })
     return slot.starting
   }
 
-  const ensure = (device?: string) => {
-    const key = device ?? ""
+  const ensure = async (device: string) => {
+    const key = device
+    const existing = slots.get(key)
+    if (existing?.releasing) await existing.releasing.catch(() => {})
     let slot = slots.get(key)
-    if (!slot) {
+    if (!slot || slot.released) {
       slot = emptySlot(device)
       slots.set(key, slot)
     }
     return ensureSlot(slot)
   }
 
-  const release = async (device?: string) => {
-    const key = device ?? ""
+  const release = async (device: string) => {
+    const key = device
     const slot = slots.get(key)
     if (!slot) return
-    slots.delete(key)
+    if (slot.releasing) return slot.releasing
+
     slot.released = true
     slot.abort.abort()
     if (slot.restartTimer) {
       clearTimeout(slot.restartTimer)
       slot.restartTimer = null
     }
-    if (slot.starting) await slot.starting.catch(() => {})
-    const child = slot.child
-    clearChild(slot)
-    if (child) await stopSlotChild(slot, child)
-    persist()
+
+    const task = (async () => {
+      if (slot.starting) await slot.starting.catch(() => {})
+      const child = slot.child
+      clearChild(slot)
+      if (child) await stopSlotChild(slot, child)
+      if (slots.get(key) === slot) slots.delete(key)
+      persist()
+    })()
+    slot.releasing = task
+    await task
   }
 
   const dispose = async () => {
     stopped = true
     const children: ChildProcess[] = []
-    for (const slot of slots.values()) {
-      slot.abort.abort()
-      if (slot.restartTimer) {
-        clearTimeout(slot.restartTimer)
-        slot.restartTimer = null
-      }
-      const child = slot.child
-      clearChild(slot)
-      if (child) {
-        slot.intentionalStops.add(child)
-        children.push(child)
-      }
-    }
+    await Promise.all(
+      [...slots.values()].map(async (slot) => {
+        slot.released = true
+        slot.abort.abort()
+        if (slot.restartTimer) {
+          clearTimeout(slot.restartTimer)
+          slot.restartTimer = null
+        }
+        if (slot.releasing) await slot.releasing.catch(() => {})
+        if (slot.starting) await slot.starting.catch(() => {})
+        const child = slot.child
+        clearChild(slot)
+        if (child) {
+          slot.intentionalStops.add(child)
+          children.push(child)
+        }
+      }),
+    )
+    slots.clear()
     stored.set(null)
     await Promise.all(children.map((child) => stopChild(child)))
   }

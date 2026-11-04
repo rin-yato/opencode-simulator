@@ -1,8 +1,7 @@
 import type { Plugin } from "@opencode/plugin"
-import type { Activity } from "../activity"
 import { resolveDevice, resolveStartDevice, type Device } from "../devices"
 import type { HubOptions } from "../serve-sim"
-import type { SessionDevices } from "../session-devices"
+import type { SimulatorPool } from "../simulator-pool"
 
 /** The part of the tool context this plugin uses. */
 export interface ToolRuntime {
@@ -34,9 +33,10 @@ export type OpenPanel = (udid: string, sessionID: string) => Promise<boolean>
 /** Dependencies shared by every tool group. */
 export interface SimulatorContext {
   readonly hub: HubOptions
-  readonly sessions: SessionDevices
-  readonly activity: Activity
+  readonly pool: SimulatorPool
   readonly openPanel?: OpenPanel
+  /** Best-effort window notification after a device is deleted. */
+  readonly onDeviceDeleted?: (udid: string) => void
 }
 
 export const SIM_OPTIONS = { namespace: "sim", codemode: true } as const
@@ -47,6 +47,12 @@ export const UDID_SCHEMA = {
     "Simulator UDID, exact name, or unique name fragment. Defaults to the device this session started; run sim_start first or pass udid.",
 } as const
 
+export const SHARE_SCHEMA = {
+  type: "boolean",
+  default: false,
+  description: "Allow an explicit udid that another session owns.",
+} as const
+
 export const errorText = (cause: unknown): string => {
   const message = cause instanceof Error ? cause.message : String(cause)
   return message.length > 2_000 ? `${message.slice(0, 2_000)}…` : message
@@ -54,12 +60,17 @@ export const errorText = (cause: unknown): string => {
 
 export const ok = (content: string, metadata: Record<string, unknown> = {}): ToolResult => ({
   content,
-  metadata: { ok: true, ...metadata },
+  metadata: { ok: true, status: "ok", ...metadata },
+})
+
+export const partial = (content: string, metadata: Record<string, unknown> = {}): ToolResult => ({
+  content,
+  metadata: { ok: false, status: "partial", ...metadata },
 })
 
 export const fail = (cause: unknown): ToolResult => ({
   content: `ERROR: ${errorText(cause)}`,
-  metadata: { ok: false },
+  metadata: { ok: false, status: "error" },
 })
 
 /**
@@ -84,18 +95,26 @@ export const define = <Input>(
  * A session without a device must not fall back to whichever simulator happens
  * to be booted: after a release that may belong to another session.
  */
-export const currentDevice = (
+export const currentDevice = async (
   simulator: SimulatorContext,
   context: ToolRuntime,
   requested?: string,
+  share?: boolean,
 ): Promise<Device> => {
-  const wanted = simulator.sessions.pick(context.sessionID, requested)
+  const wanted = simulator.pool.pick(context.sessionID, requested)
   if (!wanted) {
-    return Promise.reject(
-      new Error("No simulator is assigned to this session. Run sim_start or pass udid."),
-    )
+    throw new Error("No simulator is assigned to this session. Run sim_start or pass udid.")
   }
-  return resolveDevice(wanted, { signal: context.signal })
+  const device = await resolveDevice(wanted, { signal: context.signal })
+  if (requested?.trim() && share !== true) {
+    const others = simulator.pool.owners(device.udid, context.sessionID)
+    if (others.length > 0 || simulator.pool.isBusy(device.udid, context.sessionID)) {
+      throw new Error(
+        `${device.name} is used by another session. Pass share: true to drive the same screen.`,
+      )
+    }
+  }
+  return device
 }
 
 /** Resolve a device for boot/start; it may still be shut down. */
@@ -104,6 +123,6 @@ export const startDevice = (
   context: ToolRuntime,
   requested?: string,
 ): Promise<Device> =>
-  resolveStartDevice(simulator.sessions.pick(context.sessionID, requested), {
+  resolveStartDevice(simulator.pool.pick(context.sessionID, requested), {
     signal: context.signal,
   })

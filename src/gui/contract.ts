@@ -11,8 +11,8 @@ export const SimulatorIpc = Ipc.define({
          * once, each attached to a different simulator.
          */
         key: Schema.String,
-        /** The simulator to stream. Omitted opens whichever device is booted. */
-        device: Schema.optional(Schema.String),
+        /** The simulator to stream. Required: never stream whichever device is booted. */
+        device: Schema.String,
       }),
       output: Schema.Struct({
         embed: Schema.String,
@@ -21,6 +21,13 @@ export const SimulatorIpc = Ipc.define({
     },
     close: {
       input: Schema.Struct({ embed: Schema.String }),
+    },
+    release: {
+      input: Schema.Struct({
+        device: Schema.String,
+        /** Stop the hub even when a pane still shows the device (deleted). */
+        force: Schema.optional(Schema.Boolean),
+      }),
     },
   },
   events: {

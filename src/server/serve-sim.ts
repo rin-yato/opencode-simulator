@@ -1,8 +1,10 @@
 import { existsSync, readFileSync } from "node:fs"
 import { readdir, rm, stat } from "node:fs/promises"
+import { createRequire } from "node:module"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { resolveNodeBinary } from "../node-path"
 import { run, runWithInput, type RunResult } from "./exec"
 
 export interface HubOptions {
@@ -13,7 +15,17 @@ const PACKAGE_CLI = fileURLToPath(
   new URL("../../node_modules/expo-device-hub/vendor/serve-sim/dist/serve-sim.js", import.meta.url),
 )
 
-const nodeBinary = () => process.env.OPENCODE_SIMULATOR_NODE?.trim() || "node"
+const nodeBinary = () => resolveNodeBinary()
+
+const resolvedCli = (() => {
+  try {
+    return createRequire(import.meta.url).resolve(
+      "expo-device-hub/vendor/serve-sim/dist/serve-sim.js",
+    )
+  } catch {
+    return undefined
+  }
+})()
 
 /** Locate the vendored serve-sim CLI. */
 export function resolveServeSim(options: HubOptions = {}): string | undefined {
@@ -22,6 +34,7 @@ export function resolveServeSim(options: HubOptions = {}): string | undefined {
     configured,
     process.env.OPENCODE_SIMULATOR_HUB,
     PACKAGE_CLI,
+    resolvedCli,
     join(
       homedir(),
       ".config",
@@ -57,9 +70,10 @@ export function serveSimPort(udid: string): number | undefined {
   try {
     const state = JSON.parse(
       readFileSync(join(tmpdir(), "serve-sim", `server-${udid}.json`), "utf8"),
-    ) as { port?: unknown; pid?: unknown }
+    ) as { port?: unknown; pid?: unknown; device?: unknown }
     if (typeof state.port !== "number") return undefined
-    if (typeof state.pid === "number" && !isAlive(state.pid)) return undefined
+    if (typeof state.pid !== "number" || !isAlive(state.pid)) return undefined
+    if (typeof state.device === "string" && state.device !== udid) return undefined
     return state.port
   } catch {
     return undefined
@@ -202,10 +216,15 @@ export async function serveSimSwipe(
 }
 
 /** Read the accessibility tree through a running hub. */
-export async function serveSimAx(udid: string): Promise<unknown> {
+export async function serveSimAx(udid: string, signal?: AbortSignal): Promise<unknown> {
   const port = serveSimPort(udid)
   if (!port) return Promise.reject(new Error("serve-sim is not running for this simulator."))
-  const response = await fetch(`http://127.0.0.1:${port}/helper/${encodeURIComponent(udid)}/ax`)
+  const timeout = AbortSignal.timeout(15_000)
+  const response = await fetch(`http://127.0.0.1:${port}/ax?device=${encodeURIComponent(udid)}`, {
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+  })
   if (!response.ok) throw new Error(`serve-sim /ax returned ${response.status}.`)
-  return response.json()
+  const text = await response.text()
+  if (text.length > 5_000_000) throw new Error("serve-sim /ax returned an oversized tree.")
+  return JSON.parse(text)
 }

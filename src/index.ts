@@ -51,8 +51,18 @@ export default Plugin.define({
         }
         return {}
       },
+      device: async (input) => {
+        const data = input as { sessionID?: unknown } | undefined
+        if (typeof data?.sessionID === "string") {
+          const handle = simulator ?? (await simulatorReady)
+          const udid = handle.device(data.sessionID)
+          return udid ? { udid } : {}
+        }
+        return {}
+      },
       panel: async (input) => {
-        const data = input as { sessionID?: unknown; state?: unknown; udid?: unknown } | undefined
+        const data = input as
+          { sessionID?: unknown; state?: unknown; udid?: unknown; window?: unknown } | undefined
         if (typeof data?.sessionID === "string" && isPanelState(data.state)) {
           // A window can restore its panel before tool registration finishes.
           // Wait for the handle instead of dropping the state.
@@ -61,6 +71,7 @@ export default Plugin.define({
             sessionID: data.sessionID,
             state: data.state,
             ...(typeof data.udid === "string" && data.udid ? { udid: data.udid } : {}),
+            ...(typeof data.window === "string" && data.window ? { window: data.window } : {}),
           })
         }
         return {}
@@ -86,14 +97,14 @@ export default Plugin.define({
         void rpc.events.emit("open", { request, sessionID, udid }).catch(() => finish(false))
       })
 
-    simulator = await registerTools(
-      ctx,
-      { hubCli: ctx.options.hubCli },
-      openPanel,
-      (sessionID, udid) => {
-        void rpc.events.emit("released", { sessionID, udid }).catch(() => {})
+    simulator = await registerTools(ctx, { hubCli: ctx.options.hubCli }, openPanel, {
+      onRelease: (sessionID, udid, force) => {
+        void rpc.events.emit("released", { sessionID, udid, force }).catch(() => {})
       },
-    )
+      onDeviceDeleted: (udid) => {
+        void rpc.events.emit("deleted", { udid }).catch(() => {})
+      },
+    })
     markSimulatorReady?.(simulator)
 
     return async () => {

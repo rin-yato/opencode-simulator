@@ -13,6 +13,7 @@ import {
   currentDevice,
   define,
   ok,
+  SHARE_SCHEMA,
   SIM_OPTIONS,
   UDID_SCHEMA,
   type SimulatorContext,
@@ -22,28 +23,32 @@ import {
 
 interface SettingsInput {
   readonly udid?: string
+  readonly share?: boolean
   readonly setting?: UiSetting
   readonly value?: string
 }
 
 interface KeyboardInput {
   readonly udid?: string
+  readonly share?: boolean
   readonly state?: KeyboardState
 }
 
 interface StatusBarToolInput extends StatusBarInput {
   readonly udid?: string
+  readonly share?: boolean
 }
 
 export function registerSettingsTools(editor: ToolEditor, simulator: SimulatorContext): void {
   editor.add({
     name: "settings",
     description:
-      "Read or change simulator-wide UI settings: appearance, text-size, reduce-motion, increase-contrast, reduce-transparency, color-filter, show-borders, voiceover, hardware-keyboard, liquid-glass. Call with no setting to list everything; with setting only to read one; with setting and value to change it.",
+      "Read or change simulator-wide UI settings: appearance, text-size, reduce-motion, increase-contrast, reduce-transparency, color-filter, show-borders, voiceover, hardware-keyboard, liquid-glass. Requires the Simulator panel to be open so serve-sim is running. Call with no setting to list everything; with setting only to read one; with setting and value to change it.",
     input: {
       type: "object",
       properties: {
         udid: UDID_SCHEMA,
+        share: SHARE_SCHEMA,
         setting: {
           type: "string",
           enum: [...UI_SETTINGS],
@@ -59,7 +64,7 @@ export function registerSettingsTools(editor: ToolEditor, simulator: SimulatorCo
     },
     options: SIM_OPTIONS,
     execute: define(async (input: SettingsInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid)
+      const device = await currentDevice(simulator, context, input.udid, input.share)
       if (!input.setting) {
         const output = await readSettings(device.udid, {
           ...simulator.hub,
@@ -90,10 +95,11 @@ export function registerSettingsTools(editor: ToolEditor, simulator: SimulatorCo
       type: "object",
       properties: {
         udid: UDID_SCHEMA,
+        share: SHARE_SCHEMA,
         state: {
           type: "string",
           enum: ["show", "hide", "toggle"],
-          default: "toggle",
+          default: "show",
           description: "show and hide are idempotent; toggle flips the current state.",
         },
       },
@@ -101,8 +107,8 @@ export function registerSettingsTools(editor: ToolEditor, simulator: SimulatorCo
     },
     options: SIM_OPTIONS,
     execute: define(async (input: KeyboardInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid)
-      const state = input.state ?? "toggle"
+      const device = await currentDevice(simulator, context, input.udid, input.share)
+      const state = input.state ?? "show"
       const output = await softwareKeyboard(device.udid, state, {
         ...simulator.hub,
         signal: context.signal,
@@ -119,6 +125,7 @@ export function registerSettingsTools(editor: ToolEditor, simulator: SimulatorCo
       type: "object",
       properties: {
         udid: UDID_SCHEMA,
+        share: SHARE_SCHEMA,
         clear: { type: "boolean", description: "Remove all status bar overrides." },
         time: { type: "string", description: 'Fixed time, e.g. "9:41".' },
         batteryState: { type: "string", enum: ["charging", "charged", "discharging"] },
@@ -147,7 +154,7 @@ export function registerSettingsTools(editor: ToolEditor, simulator: SimulatorCo
     },
     options: SIM_OPTIONS,
     execute: define(async (input: StatusBarToolInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid)
+      const device = await currentDevice(simulator, context, input.udid, input.share)
       const output = await statusBar(device.udid, input, { signal: context.signal })
       return ok(output, { udid: device.udid })
     }),

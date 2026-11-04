@@ -1,4 +1,4 @@
-import { WebContentsView, type BrowserWindow } from "electron"
+import { WebContentsView, session as electronSession, type BrowserWindow } from "electron"
 import type { Embed, Plugin } from "@opencode/plugin/gui/main"
 import { SimulatorIpc } from "./contract"
 import { createHubManager } from "./hub"
@@ -7,15 +7,14 @@ interface Pane {
   readonly windowId: number
   /** The session that owns the panel; one pane per window and session. */
   readonly sessionKey: string
-  /** The device this pane streams. Undefined for the default hub. */
-  readonly device: string | undefined
+  /** The device this pane streams. */
+  readonly device: string
   url: string
   readonly view: WebContentsView
   readonly embed: Embed
 }
 
 const paneId = (windowId: number, sessionKey: string) => `${windowId}\u0000${sessionKey}`
-const deviceId = (device: string | undefined) => device ?? ""
 
 /** How long a hub lives after its last panel closes, so reopening is instant. */
 const RELEASE_IDLE_MS = 30_000
@@ -23,25 +22,27 @@ const RELEASE_IDLE_MS = 30_000
 const setup: Plugin.MainSetup = (ctx) => {
   ctx.log.write("info", "opencode-simulator main loaded")
   const hub = createHubManager(ctx)
+  const simulatorSession = electronSession.fromPartition("persist:opencode-simulator")
+  simulatorSession.setPermissionRequestHandler((_contents, _permission, callback) =>
+    callback(false),
+  )
   const panes = new Map<string, Pane>()
   const byEmbed = new Map<string, Pane>()
   const idleTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
-  const hasPaneFor = (device: string | undefined) =>
-    [...panes.values()].some((pane) => deviceId(pane.device) === deviceId(device))
+  const hasPaneFor = (device: string) => [...panes.values()].some((pane) => pane.device === device)
 
-  const cancelRelease = (device: string | undefined) => {
-    const key = deviceId(device)
-    const timer = idleTimers.get(key)
+  const cancelRelease = (device: string) => {
+    const timer = idleTimers.get(device)
     if (!timer) return
     clearTimeout(timer)
-    idleTimers.delete(key)
+    idleTimers.delete(device)
   }
 
-  const scheduleRelease = (device: string | undefined) => {
+  const scheduleRelease = (device: string) => {
     if (hasPaneFor(device)) return
     cancelRelease(device)
-    const key = deviceId(device)
+    const key = device
     idleTimers.set(
       key,
       setTimeout(() => {
@@ -91,10 +92,25 @@ const setup: Plugin.MainSetup = (ctx) => {
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: true,
+          session: simulatorSession,
         },
       })
       view.setBackgroundColor("#000000")
       view.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
+      const allowedOrigin = new URL(url).origin
+      const allowNavigation = (target: string): boolean => {
+        try {
+          return new URL(target).origin === allowedOrigin
+        } catch {
+          return false
+        }
+      }
+      view.webContents.on("will-navigate", (event, target) => {
+        if (!allowNavigation(target)) event.preventDefault()
+      })
+      view.webContents.on("will-redirect", (event, target) => {
+        if (!allowNavigation(target)) event.preventDefault()
+      })
 
       const embed = ctx.embeds.create(view, window)
       const pane: Pane = {
@@ -133,6 +149,13 @@ const setup: Plugin.MainSetup = (ctx) => {
       const pane = byEmbed.get(input.embed)
       if (!pane || pane.windowId !== caller.window) return
       disposePane(pane)
+    },
+
+    release: async (input) => {
+      // Another pane may still show this device (explicit sharing or another
+      // window's session). Pane disposal schedules the real release.
+      if (!input.force && hasPaneFor(input.device)) return
+      await hub.release(input.device)
     },
   })
 

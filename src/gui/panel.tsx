@@ -1,8 +1,9 @@
 import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js"
 import { usePlugin } from "@opencode/plugin/gui"
 import type { MountedSession } from "@opencode/plugin/gui"
+import { SIMULATOR_RPC } from "../rpc"
 import { SimulatorIpc } from "./contract"
-import { requestedDevice } from "./requests"
+import { clearDevice, requestDevice, requestedDevice } from "./requests"
 
 interface Attached {
   readonly embed: string
@@ -13,6 +14,8 @@ interface Attached {
 export function SimulatorPanel(props: { session: MountedSession }) {
   const ctx = usePlugin()
   const client = ctx.main(SimulatorIpc)
+  const rpc = ctx.client.rpc(SIMULATOR_RPC)
+  const [ready, setReady] = createSignal(false)
   const [embed, setEmbed] = createSignal<string>()
   const [url, setUrl] = createSignal<string>()
   const [error, setError] = createSignal<string>()
@@ -51,6 +54,7 @@ export function SimulatorPanel(props: { session: MountedSession }) {
   }
 
   createEffect(() => {
+    if (!ready()) return
     const key = props.session.key
     const device = requestedDevice(key)
     if (!device) {
@@ -70,11 +74,31 @@ export function SimulatorPanel(props: { session: MountedSession }) {
   })
 
   onMount(() => {
+    void (async () => {
+      try {
+        const result = (await Promise.race([
+          rpc.device({ sessionID: props.session.id }),
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 5_000)),
+        ])) as { readonly udid?: string } | null | undefined
+        if (!result) {
+          // The server did not answer; use the window's cached device.
+        } else if (result.udid) {
+          requestDevice(props.session.key, result.udid)
+        } else {
+          clearDevice(props.session.key)
+        }
+      } catch {}
+      setReady(true)
+    })()
+
     const stopFailed = client.on("failed", (event) => {
       if (event.embed !== attached?.embed) return
+      const embed = attached.embed
+      generation += 1
       attached = undefined
       setEmbed(undefined)
       setError(event.detail)
+      void client.close({ embed }).catch(() => {})
     })
     const stopRestarted = client.on("restarted", (event) => {
       if (event.embed !== attached?.embed) return

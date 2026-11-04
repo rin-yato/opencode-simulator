@@ -1,7 +1,10 @@
 import { execFile, execFileSync, type ChildProcess } from "node:child_process"
 import { existsSync } from "node:fs"
 import { createServer } from "node:net"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import type { MainContext } from "@opencode/plugin/gui/main"
+import { resolveNodeBinary } from "../node-path"
 
 declare const require: NodeRequire
 
@@ -26,7 +29,7 @@ export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
  * error, not a reason to download and execute a package at runtime.
  */
 export const resolveCli = (explicit?: string): Cli | undefined => {
-  const node = process.env.OPENCODE_SIMULATOR_NODE?.trim() || "node"
+  const node = resolveNodeBinary()
   const local = (entry: string): Cli => ({
     command: node,
     args: [entry],
@@ -40,6 +43,18 @@ export const resolveCli = (explicit?: string): Cli | undefined => {
   try {
     return local(require.resolve("serve-sim/dist/serve-sim.js"))
   } catch {}
+  const configured = join(
+    homedir(),
+    ".config",
+    "opencode",
+    "node_modules",
+    "expo-device-hub",
+    "vendor",
+    "serve-sim",
+    "dist",
+    "serve-sim.js",
+  )
+  if (existsSync(configured)) return local(configured)
   return undefined
 }
 
@@ -75,14 +90,28 @@ export const commandLine = (pid: number) => {
   }
 }
 
-export async function waitForReady(url: string, signal: AbortSignal): Promise<void> {
+export async function waitForReady(
+  url: string,
+  device: string,
+  signal: AbortSignal,
+): Promise<void> {
   const deadline = Date.now() + READY_TIMEOUT_MS
   while (Date.now() < deadline) {
     if (signal.aborted) throw new Error("The simulator hub start was cancelled.")
     try {
       const response = await fetch(`${url}/readyz`, { signal: AbortSignal.timeout(1_000) })
-      if (response.ok) return
-    } catch {
+      if (response.ok) {
+        const body = (await response.json().catch(() => undefined)) as
+          { readonly status?: unknown; readonly device?: unknown } | undefined
+        // serve-sim reports the device it selected. A different device means
+        // another process answered this port, not our child.
+        if (typeof body?.device === "string" && body.device !== device) {
+          throw new Error(`serve-sim reported device ${body.device}, expected ${device}.`)
+        }
+        return
+      }
+    } catch (cause) {
+      if (cause instanceof Error && cause.message.includes("reported device")) throw cause
       // The process is still starting.
     }
     await sleep(READY_POLL_MS)
