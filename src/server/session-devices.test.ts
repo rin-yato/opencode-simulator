@@ -46,6 +46,14 @@ describe("SessionDevices", () => {
     expect(Object.keys(data.get(SESSION_DEVICES_KEY) as object)).toHaveLength(MAX_SESSION_DEVICES)
   })
 
+  test("lists session entries for startup reconciliation", async () => {
+    const sessions = new SessionDevices({ ses_1: "udid-1", ses_2: "udid-2" })
+    expect(sessions.entries()).toEqual([
+      ["ses_1", "udid-1"],
+      ["ses_2", "udid-2"],
+    ])
+  })
+
   test("forgets one session and returns its device", async () => {
     const { storage, data } = fakeStorage()
     const sessions = await SessionDevices.load(storage)

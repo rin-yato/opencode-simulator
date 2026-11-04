@@ -1,5 +1,6 @@
 import { createEffect } from "solid-js"
 import { Command, MenuItem, Panel, Plugin, type PanelTab } from "@opencode/plugin/gui"
+import { SimulatorIpc } from "./gui/contract"
 import main from "./gui/main"
 import { SimulatorPanel } from "./gui/panel"
 import en from "./gui/i18n/en"
@@ -66,6 +67,14 @@ export default Plugin.define({
     // Read the client where it is used: the plugin server replaces it on reload,
     // and a client captured at setup then rejects every call.
     const client = () => ctx.client.rpc(SIMULATOR_RPC)
+    const mainClient = ctx.main(SimulatorIpc)
+    const windowKey = (() => {
+      try {
+        return crypto.randomUUID()
+      } catch {
+        return `window-${Math.random().toString(36).slice(2)}`
+      }
+    })()
     let stopped = false
 
     const handleOpen = (event: {
@@ -117,7 +126,9 @@ export default Plugin.define({
     }
 
     const sendPanel = (input: { sessionID: string; state: PanelState; udid?: string }) => {
-      panelQueue = panelQueue.then(() => withTimeout(client().panel(input), 5_000)).catch(() => {})
+      panelQueue = panelQueue
+        .then(() => withTimeout(client().panel({ ...input, window: windowKey }), 5_000))
+        .catch(() => {})
     }
 
     const syncPanels = (force = false) => {
@@ -185,12 +196,35 @@ export default Plugin.define({
           })) {
             const sessionID = typeof event.data?.sessionID === "string" ? event.data.sessionID : ""
             const udid = typeof event.data?.udid === "string" ? event.data.udid : ""
+            const force = event.data?.force === true
             if (!sessionID || !udid) continue
             const session = ctx.sessions.list().find((candidate) => candidate.id === sessionID)
             if (!session) continue
-            if (ctx.layout.state(panelKey, session) !== "closed") continue
+            if (!force && ctx.layout.state(panelKey, session) !== "closed") continue
             if (requestedDevice(session.key) !== udid) continue
             clearDevice(session.key)
+            if (force) void mainClient.release({ device: udid }).catch(() => {})
+          }
+        } catch {}
+        if (stopped || ctx.signal.aborted) return
+        await new Promise((resolve) => setTimeout(resolve, 500))
+      }
+    })()
+
+    // A deleted simulator must not be re-claimed by the next heartbeat. Clear
+    // every window's stored copy and stop its hub immediately.
+    void (async () => {
+      while (!stopped && !ctx.signal.aborted) {
+        try {
+          for await (const event of client().events.subscribe("deleted", {
+            signal: ctx.signal,
+          })) {
+            const udid = typeof event.data?.udid === "string" ? event.data.udid : ""
+            if (!udid) continue
+            for (const session of ctx.sessions.list()) {
+              if (requestedDevice(session.key) === udid) clearDevice(session.key)
+            }
+            void mainClient.release({ device: udid, force: true }).catch(() => {})
           }
         } catch {}
         if (stopped || ctx.signal.aborted) return
@@ -205,7 +239,7 @@ export default Plugin.define({
         if (entry.state === "closed") continue
         try {
           void client()
-            .panel({ sessionID, state: "closed" })
+            .panel({ sessionID, state: "closed", window: windowKey })
             .catch(() => {})
         } catch {}
       }

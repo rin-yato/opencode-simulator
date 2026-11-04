@@ -28,12 +28,26 @@ export const SIMULATOR_RPC = {
         additionalProperties: false,
       },
     },
+    device: {
+      input: {
+        type: "object",
+        properties: { sessionID: { type: "string" } },
+        required: ["sessionID"],
+        additionalProperties: false,
+      },
+      output: {
+        type: "object",
+        properties: { udid: { type: "string" } },
+        additionalProperties: false,
+      },
+    },
     panel: {
       input: {
         type: "object",
         properties: {
           sessionID: { type: "string" },
           udid: { type: "string" },
+          window: { type: "string" },
           state: {
             type: "string",
             enum: ["closed", "open", "active", "visible"],
@@ -68,8 +82,17 @@ export const SIMULATOR_RPC = {
         properties: {
           sessionID: { type: "string" },
           udid: { type: "string" },
+          force: { type: "boolean" },
         },
-        required: ["sessionID", "udid"],
+        required: ["sessionID", "udid", "force"],
+        additionalProperties: false,
+      },
+    },
+    deleted: {
+      schema: {
+        type: "object",
+        properties: { udid: { type: "string" } },
+        required: ["udid"],
         additionalProperties: false,
       },
     },

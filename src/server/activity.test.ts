@@ -110,4 +110,105 @@ describe("Activity", () => {
     await activity.close("ses_1")
     expect(released).toEqual([])
   })
+
+  test("expires a panel a dead window stopped refreshing", async () => {
+    const { sessions, activity } = setup({ ses_1: "udid-1" })
+    await activity.panel({
+      sessionID: "ses_1",
+      udid: "udid-1",
+      state: "visible",
+      window: "win-a",
+      ttlMs: 1_000,
+    })
+    await activity.expirePanels(Date.now() + 5_000)
+    expect(sessions.pick("ses_1")).toBeUndefined()
+    expect(activity.panelState("ses_1")).toBe("closed")
+  })
+
+  test("keeps the claim while another window still shows the panel", async () => {
+    const { sessions, activity } = setup({ ses_1: "udid-1" })
+    await activity.panel({
+      sessionID: "ses_1",
+      udid: "udid-1",
+      state: "visible",
+      window: "win-a",
+    })
+    await activity.panel({
+      sessionID: "ses_1",
+      udid: "udid-1",
+      state: "open",
+      window: "win-b",
+    })
+    await activity.panel({ sessionID: "ses_1", state: "closed", window: "win-a" })
+    expect(sessions.pick("ses_1")).toBe("udid-1")
+    await activity.panel({ sessionID: "ses_1", state: "closed", window: "win-b" })
+    expect(sessions.pick("ses_1")).toBeUndefined()
+  })
+
+  test("a hold keeps the device after the panel closes and the session idles", async () => {
+    const { sessions, activity } = setup({ ses_1: "udid-1" })
+    activity.hold("ses_1")
+    await activity.panel({
+      sessionID: "ses_1",
+      udid: "udid-1",
+      state: "visible",
+      window: "win-a",
+    })
+    await activity.panel({ sessionID: "ses_1", state: "closed", window: "win-a" })
+    await activity.idle("ses_1")
+    expect(sessions.pick("ses_1")).toBe("udid-1")
+    expect(activity.releaseState("ses_1")).toBe("held")
+  })
+
+  test("manual release clears panels and emits a forced release", async () => {
+    const { sessions } = setup()
+    const released: boolean[] = []
+    const activity = new Activity({
+      sessions,
+      shutdownDelayMs: 0,
+      onRelease: (_sessionID, _udid, force) => released.push(force),
+    })
+    await activity.panel({ sessionID: "ses_1", udid: "udid-1", state: "visible" })
+    expect(await activity.releaseManual("ses_1", "udid-1")).toBe("udid-1")
+    expect(sessions.pick("ses_1")).toBeUndefined()
+    expect(activity.panelState("ses_1")).toBe("closed")
+    expect(released).toEqual([true])
+  })
+
+  test("a deleted UDID cannot be claimed by a late panel update", async () => {
+    const { sessions, activity } = setup()
+    activity.forget("udid-1")
+    await activity.panel({ sessionID: "ses_1", udid: "udid-1", state: "visible" })
+    expect(sessions.pick("ses_1")).toBeUndefined()
+    expect(activity.panelState("ses_1")).toBe("closed")
+  })
+
+  test("expires a bounded hold", async () => {
+    const { sessions, activity } = setup({ ses_1: "udid-1" })
+    activity.hold("ses_1", 1_000)
+    expect(activity.releaseState("ses_1")).toBe("held")
+    await activity.expirePanels(Date.now() + 5_000)
+    expect(sessions.pick("ses_1")).toBeUndefined()
+    expect(activity.releaseState("ses_1")).toBe("idle")
+  })
+
+  test("manual release clears a panel that shows a different device", async () => {
+    const sessions = new SessionDevices({ ses_1: "udid-1" })
+    const released: string[] = []
+    const activity = new Activity({
+      sessions,
+      shutdownDelayMs: 0,
+      onRelease: (_sessionID, udid) => released.push(udid),
+    })
+    await activity.panel({
+      sessionID: "ses_1",
+      udid: "udid-panel",
+      state: "visible",
+      window: "win-a",
+    })
+    expect(await activity.releaseManual("ses_1")).toBe("udid-1")
+    expect(sessions.pick("ses_1")).toBeUndefined()
+    expect(activity.panelState("ses_1")).toBe("closed")
+    expect(released).toEqual(["udid-1", "udid-panel"])
+  })
 })

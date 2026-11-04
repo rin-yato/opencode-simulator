@@ -172,11 +172,14 @@ export async function pressButton(
   duration: number | undefined,
   options: ActionOptions = {},
 ): Promise<void> {
-  // serve-sim's HID path reaches SpringBoard without focusing the Simulator.
-  try {
-    await serveSimButton(udid, button, options)
-    return
-  } catch {}
+  // serve-sim's HID path reaches SpringBoard without focusing the Simulator,
+  // but it cannot hold a button. A hold needs the AXe path below.
+  if (!duration || duration <= 0) {
+    try {
+      await serveSimButton(udid, button, options)
+      return
+    } catch {}
+  }
 
   // AXe's hardware button path only lands when Simulator.app is frontmost;
   // otherwise it exits 0 and does nothing.
@@ -188,7 +191,17 @@ export async function pressButton(
   const args = ["button", button]
   if (duration && duration > 0) args.push("--duration", String(duration))
   args.push("--udid", udid)
-  await run("axe", args, { signal: options.signal, timeout: 15_000 })
+  try {
+    await run("axe", args, { signal: options.signal, timeout: 15_000 })
+  } finally {
+    // The AXe path needs Simulator.app focused; hide it again so the panel is
+    // still the only visible copy.
+    void run(
+      "osascript",
+      ["-e", 'tell application "System Events" to set visible of process "Simulator" to false'],
+      { signal: options.signal, timeout: 5_000 },
+    ).catch(() => {})
+  }
 }
 
 export async function rotate(

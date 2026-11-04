@@ -1,4 +1,5 @@
-import { mkdir, readdir, rm, stat } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import { chmod, mkdir, readdir, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { run } from "./exec"
@@ -64,28 +65,35 @@ export async function screenshot(
   udid: string,
   options: ScreenshotOptions = {},
 ): Promise<Screenshot> {
-  await mkdir(SCREENSHOT_DIRECTORY, { recursive: true })
+  await mkdir(SCREENSHOT_DIRECTORY, { recursive: true, mode: 0o700 })
+  await chmod(SCREENSHOT_DIRECTORY, 0o700).catch(() => {})
   await pruneScreenshots()
 
   const stamp = Date.now()
-  const png = join(SCREENSHOT_DIRECTORY, `${udid}-${stamp}.png`)
+  const suffix = randomUUID().slice(0, 8)
+  const png = join(SCREENSHOT_DIRECTORY, `${udid}-${stamp}-${suffix}.png`)
   const format = options.format ?? "jpeg"
   const width = options.width ?? 800
   await run("xcrun", ["simctl", "io", udid, "screenshot", png], {
     signal: options.signal,
     timeout: 30_000,
   })
+  await chmod(png, 0o600).catch(() => {})
 
   const source = await imageSize(png, options.signal)
   if (format === "png" && source.width <= width) {
     return { path: png, mime: "image/png", width: source.width, height: source.height }
   }
 
-  const output = join(SCREENSHOT_DIRECTORY, `${udid}-${stamp}.${format === "png" ? "png" : "jpg"}`)
+  const output = join(
+    SCREENSHOT_DIRECTORY,
+    `${udid}-${stamp}-${suffix}.${format === "png" ? "png" : "jpg"}`,
+  )
   const args = ["--resampleWidth", String(width)]
   if (format === "jpeg") args.push("-s", "format", "jpeg", "-s", "formatOptions", "80")
   args.push(png, "--out", output)
   await run("sips", args, { signal: options.signal })
+  await chmod(output, 0o600).catch(() => {})
   if (output !== png) await rm(png, { force: true })
 
   const scale = source.width > 0 ? Math.min(1, width / source.width) : 1

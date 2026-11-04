@@ -14,6 +14,7 @@ import {
   currentDevice,
   define,
   ok,
+  SHARE_SCHEMA,
   SIM_OPTIONS,
   UDID_SCHEMA,
   type SimulatorContext,
@@ -23,10 +24,12 @@ import {
 
 interface StatusInput {
   readonly udid?: string
+  readonly share?: boolean
 }
 
 interface UiInput {
   readonly udid?: string
+  readonly share?: boolean
   readonly mode?: "visible" | "interactive" | "all"
   readonly max?: number
   readonly find?: string
@@ -34,6 +37,7 @@ interface UiInput {
 
 interface WaitInput {
   readonly udid?: string
+  readonly share?: boolean
   readonly text: string
   readonly timeout?: number
   readonly interval?: number
@@ -41,6 +45,7 @@ interface WaitInput {
 
 interface ScreenshotInput {
   readonly udid?: string
+  readonly share?: boolean
   readonly width?: number
   readonly format?: "jpeg" | "png"
 }
@@ -51,15 +56,15 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
   editor.add({
     name: "status",
     description:
-      "Show the booted simulator, current app, screen size, AXe availability, serve-sim port, and whether the Simulator panel is open and the agent session is running. Start here if a tap or read fails.",
+      "Show the booted simulator, owner/managed state, current app, screen size, AXe availability, serve-sim port, panel state, release state, and whether the agent session is running. Start here if a tap or read fails.",
     input: {
       type: "object",
-      properties: { udid: UDID_SCHEMA },
+      properties: { udid: UDID_SCHEMA, share: SHARE_SCHEMA },
       additionalProperties: false,
     },
     options: SIM_OPTIONS,
     execute: define(async (input: StatusInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid)
+      const device = await currentDevice(simulator, context, input.udid, input.share)
       let snapshot: UiSnapshot | undefined
       let snapshotError = ""
       try {
@@ -81,21 +86,36 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
       const screen = snapshot?.screen
         ? `${Math.round(snapshot.screen.width)}x${Math.round(snapshot.screen.height)}`
         : "unknown"
-      const panel = simulator.activity.panelState(context.sessionID)
-      const running = simulator.activity.isRunning(context.sessionID)
+      const panel = simulator.pool.panelState(context.sessionID)
+      const panelDevice = simulator.pool.panelDevice(context.sessionID)
+      const running = simulator.pool.isRunning(context.sessionID)
+      const release = simulator.pool.releaseState(context.sessionID)
+      const managed = simulator.pool.isManaged(device.udid)
       return ok(
         [
           `device=${device.name}`,
           `udid=${device.udid}`,
           `state=${device.state}`,
+          `managed=${managed ? "yes" : "no"}`,
           `panel=${panel}`,
+          ...(panelDevice && panelDevice !== device.udid ? [`panel-device=${panelDevice}`] : []),
+          `release=${release}`,
           `session=${running ? "running" : "idle"}`,
           `app=${snapshot?.app || "-"}`,
           `screen=${screen}`,
           `axe=${axeVersion}${snapshotError ? ` (UI read failed: ${snapshotError})` : ""}`,
           `serve-sim=${port ? `http://127.0.0.1:${port}` : "not running"}`,
         ].join("\n"),
-        { udid: device.udid, app: snapshot?.app, port, panel, running },
+        {
+          udid: device.udid,
+          app: snapshot?.app,
+          port,
+          panel,
+          panelDevice,
+          running,
+          release,
+          managed,
+        },
       )
     }),
   })
@@ -103,11 +123,12 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
   editor.add({
     name: "ui",
     description:
-      "Read the current screen as a compact action table (typically under 1 KB). Each interactive row has a logical tap point. Use find for one control; use mode=interactive for the next action; screenshots only for visual questions.",
+      "Read the current screen as a compact action table. Each interactive row has a logical tap point that sim_tap accepts. Use find for one control; use mode=interactive for the next action; screenshots only for visual questions.",
     input: {
       type: "object",
       properties: {
         udid: UDID_SCHEMA,
+        share: SHARE_SCHEMA,
         mode: {
           type: "string",
           enum: ["visible", "interactive", "all"],
@@ -121,7 +142,7 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
     },
     options: SIM_OPTIONS,
     execute: define(async (input: UiInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid)
+      const device = await currentDevice(simulator, context, input.udid, input.share)
       const snapshot = await readSnapshot(device.udid, {
         includeAll: input.mode === "all",
         signal: context.signal,
@@ -147,6 +168,7 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
       type: "object",
       properties: {
         udid: UDID_SCHEMA,
+        share: SHARE_SCHEMA,
         text: { type: "string", description: "Case-insensitive substring of label, id, or value." },
         timeout: { type: "number", minimum: 0.1, maximum: 60, default: 5 },
         interval: { type: "number", minimum: 0.1, maximum: 5, default: 0.3 },
@@ -156,7 +178,7 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
     },
     options: SIM_OPTIONS,
     execute: define(async (input: WaitInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid)
+      const device = await currentDevice(simulator, context, input.udid, input.share)
       const started = Date.now()
       const timeout = (input.timeout ?? 5) * 1_000
       const interval = (input.interval ?? 0.3) * 1_000
@@ -177,10 +199,10 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
         if (Date.now() >= deadline) break
         await sleep(interval)
       }
-      return ok(`FAIL ${JSON.stringify(input.text)}${last ? ` (${last})` : " not found"}`, {
-        udid: device.udid,
-        pass: false,
-      })
+      return {
+        content: `FAIL ${JSON.stringify(input.text)}${last ? ` (${last})` : " not found"}`,
+        metadata: { ok: false, status: "timeout", pass: false, udid: device.udid },
+      }
     }),
   })
 
@@ -192,6 +214,7 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
       type: "object",
       properties: {
         udid: UDID_SCHEMA,
+        share: SHARE_SCHEMA,
         width: { type: "integer", minimum: 200, maximum: 2000, default: 800 },
         format: { type: "string", enum: ["jpeg", "png"], default: "jpeg" },
       },
@@ -199,7 +222,7 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
     },
     options: SIM_OPTIONS,
     execute: define(async (input: ScreenshotInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid)
+      const device = await currentDevice(simulator, context, input.udid, input.share)
       const result = await screenshot(device.udid, {
         signal: context.signal,
         width: input.width ?? 800,

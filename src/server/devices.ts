@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { run } from "./exec"
+import { run, runWithInput } from "./exec"
 
 export interface Device {
   readonly udid: string
@@ -195,7 +195,7 @@ export async function bootDevice(device: Device, options: CommandOptions = {}): 
 }
 
 export async function deleteDevice(device: Device, options: CommandOptions = {}): Promise<string> {
-  if (device.state === "Booted") {
+  if (device.state === "Booted" || device.state === "Booting") {
     await run("xcrun", ["simctl", "shutdown", device.udid], {
       signal: options.signal,
       timeout: 60_000,
@@ -255,6 +255,74 @@ export async function shutdownDevice(
  * Only the bundle is copied; app data stays on the source. Installing over an
  * existing bundle on the target keeps that target's data container.
  */
+export async function installAppBundle(
+  udid: string,
+  appPath: string,
+  options: CommandOptions = {},
+): Promise<string> {
+  await run("xcrun", ["simctl", "install", udid, appPath], {
+    signal: options.signal,
+    timeout: 120_000,
+  })
+  return `installed ${appPath} on ${udid}`
+}
+
+export interface InstalledApp {
+  readonly bundleId: string
+  readonly name: string
+}
+
+/** Installed apps on a booted simulator, parsed from `simctl listapps`. */
+export async function listApps(
+  udid: string,
+  options: CommandOptions = {},
+): Promise<InstalledApp[]> {
+  const listing = await run("xcrun", ["simctl", "listapps", udid], {
+    signal: options.signal,
+    timeout: 30_000,
+  })
+  const converted = await runWithInput(
+    "plutil",
+    ["-convert", "json", "-o", "-", "-"],
+    listing.stdout,
+    { signal: options.signal, timeout: 15_000 },
+  )
+  const parsed = JSON.parse(converted.stdout) as Record<
+    string,
+    { readonly CFBundleDisplayName?: string; readonly CFBundleName?: string }
+  >
+  return Object.entries(parsed).map(([bundleId, value]) => ({
+    bundleId,
+    name: value.CFBundleDisplayName ?? value.CFBundleName ?? bundleId,
+  }))
+}
+
+export async function uninstallApp(
+  udid: string,
+  bundleId: string,
+  options: CommandOptions = {},
+): Promise<string> {
+  await run("xcrun", ["simctl", "uninstall", udid, bundleId], {
+    signal: options.signal,
+    timeout: 60_000,
+  })
+  return `uninstalled ${bundleId} from ${udid}`
+}
+
+export async function eraseDevice(device: Device, options: CommandOptions = {}): Promise<string> {
+  if (device.state === "Booted" || device.state === "Booting") {
+    await run("xcrun", ["simctl", "shutdown", device.udid], {
+      signal: options.signal,
+      timeout: 60_000,
+    })
+  }
+  await run("xcrun", ["simctl", "erase", device.udid], {
+    signal: options.signal,
+    timeout: 120_000,
+  })
+  return `erased ${device.name} (${device.udid})`
+}
+
 export async function installAppFrom(
   target: string,
   source: string,

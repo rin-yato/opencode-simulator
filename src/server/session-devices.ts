@@ -64,6 +64,10 @@ export class SessionDevices {
     return this.#devices.size
   }
 
+  entries(): readonly (readonly [string, string])[] {
+    return [...this.#devices.entries()]
+  }
+
   /**
    * Make `udid` the session's default unless another session already owns it.
    *

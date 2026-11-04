@@ -273,7 +273,7 @@ export async function readSnapshot(
     nodes = await viaAxe(udid, options.signal)
   } catch (cause) {
     if (!/ENOENT|not found|command failed/i.test(String(cause))) throw cause
-    nodes = (await serveSimAx(udid)) as AxNode[]
+    nodes = (await serveSimAx(udid, options.signal)) as AxNode[]
   }
   return {
     app: appOf(nodes),
