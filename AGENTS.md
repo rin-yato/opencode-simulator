@@ -32,10 +32,11 @@ run `bun run build` after GUI changes.
 - Resolve the calling session's device. Never fall back to the focused session
   or the first booted simulator.
 - One UDID is one simulator. Two sessions on one UDID share screen and state;
-  use `sim_create` for parallel same-model work.
+  `sim_start` allocates a free pool device by default. Use `sim_create` for an
+  explicitly named device.
 - Spawn with argument arrays (`execFile`/`spawn`), never shell strings.
-- Keep state bounded: session maps cap at 500 entries, screenshots at 24 hours
-  and 200 files.
+- Keep state bounded: session maps cap at 500 entries, the pool at five devices
+  per model/runtime, screenshots at 24 hours and 200 files.
 - Tool descriptions are agent-facing API. Update `docs/tools.md` and
   `src/skills/simulator.md` when behavior changes.
 - No telemetry or outbound requests. serve-sim binds to loopback only.
@@ -49,5 +50,5 @@ run `bun run build` after GUI changes.
 - For panel or device changes, test on macOS with two booted simulators: one
   `sim_start` in each of two sessions, confirm each panel follows its own
   device, and confirm `ps` shows one serve-sim per device.
-- Do not leave test simulators behind. `sim_create` copies are real disk images;
-  delete them with `sim_delete`.
+- Do not leave test simulators behind. Pool devices are real disk images; delete
+  them with `sim_delete`.

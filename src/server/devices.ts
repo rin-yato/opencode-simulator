@@ -93,7 +93,7 @@ export const formatSize = (kb: number | undefined): string => {
 
 /**
  * Resolve a UDID, an exact name, or a unique name fragment. Ambiguous names fail
- * instead of guessing, so `iPhone 17 Pro` never silently selects a copy.
+ * instead of guessing, so `iPhone 17 Pro` never silently selects one of several.
  */
 export function matchDevice(devices: readonly Device[], wanted: string): Device {
   const exact = devices.find((device) => device.udid === wanted)
@@ -210,7 +210,7 @@ export async function deleteDevice(device: Device, options: CommandOptions = {})
 
 /**
  * Create a clean simulator with the same device type and runtime as `source`.
- * The source is left alone, so it can stay booted while the copy runs.
+ * The source is left alone, so it can stay booted while the new device runs.
  */
 export async function createDeviceFrom(
   source: Device,
@@ -238,36 +238,6 @@ export async function createDeviceFrom(
   }
 }
 
-/**
- * Clone a shut-down simulator, including its data volume. APFS shares blocks
- * with the source until the clone writes, so this is much cheaper than a fresh
- * device whose first boot has to prepare a data volume.
- */
-export async function cloneDevice(
-  source: Device,
-  name: string,
-  options: CommandOptions = {},
-): Promise<Device> {
-  if (source.state === "Booted") {
-    throw new Error(`Shut down ${source.name} before cloning it.`)
-  }
-  const { stdout } = await run("xcrun", ["simctl", "clone", source.udid, name], {
-    signal: options.signal,
-    timeout: 120_000,
-  })
-  const udid = stdout.trim()
-  if (!udid) throw new Error("xcrun simctl clone returned no UDID.")
-  return {
-    udid,
-    name,
-    state: "Shutdown",
-    runtime: source.runtime,
-    runtimeId: source.runtimeId,
-    deviceType: source.deviceType,
-    available: true,
-  }
-}
-
 export async function shutdownDevice(
   device: Device,
   options: CommandOptions = {},
@@ -282,7 +252,8 @@ export async function shutdownDevice(
 
 /**
  * Install an app that is already installed on `source` onto another simulator.
- * Only the bundle is copied; app data stays on the source.
+ * Only the bundle is copied; app data stays on the source. Installing over an
+ * existing bundle on the target keeps that target's data container.
  */
 export async function installAppFrom(
   target: string,
@@ -296,6 +267,13 @@ export async function installAppFrom(
   })
   const path = container.stdout.trim()
   if (!path) throw new Error(`No installed app ${bundleId} on the source simulator.`)
+  // A reused pool device may still have the old build running.
+  try {
+    await run("xcrun", ["simctl", "terminate", target, bundleId], {
+      signal: options.signal,
+      timeout: 15_000,
+    })
+  } catch {}
   await run("xcrun", ["simctl", "install", target, path], {
     signal: options.signal,
     timeout: 120_000,

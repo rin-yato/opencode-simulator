@@ -1,9 +1,8 @@
 import type { Plugin } from "@opencode/plugin"
-import type { Copies } from "../copies"
+import type { Activity } from "../activity"
 import { resolveDevice, resolveStartDevice, type Device } from "../devices"
 import type { HubOptions } from "../serve-sim"
 import type { SessionDevices } from "../session-devices"
-import type { Templates } from "../templates"
 
 /** The part of the tool context this plugin uses. */
 export interface ToolRuntime {
@@ -36,12 +35,8 @@ export type OpenPanel = (udid: string, sessionID: string) => Promise<boolean>
 export interface SimulatorContext {
   readonly hub: HubOptions
   readonly sessions: SessionDevices
-  readonly templates: Templates
-  readonly copies: Copies
-  readonly copyTtlDays: number
+  readonly activity: Activity
   readonly openPanel?: OpenPanel
-  /** Best-effort session title, used to name an automatic copy when no label is given. */
-  readonly sessionTitle?: (sessionID: string) => Promise<string | undefined>
 }
 
 export const SIM_OPTIONS = { namespace: "sim", codemode: true } as const
@@ -49,7 +44,7 @@ export const SIM_OPTIONS = { namespace: "sim", codemode: true } as const
 export const UDID_SCHEMA = {
   type: "string",
   description:
-    "Simulator UDID, exact name, or unique name fragment. Defaults to the device this session started, else the only booted simulator.",
+    "Simulator UDID, exact name, or unique name fragment. Defaults to the device this session started; run sim_start first or pass udid.",
 } as const
 
 export const errorText = (cause: unknown): string => {
@@ -83,15 +78,25 @@ export const define = <Input>(
   }
 }
 
-/** Resolve the device a session asked for, or its remembered default. */
+/**
+ * Resolve the device a session asked for, or its remembered default.
+ *
+ * A session without a device must not fall back to whichever simulator happens
+ * to be booted: after a release that may belong to another session.
+ */
 export const currentDevice = (
   simulator: SimulatorContext,
   context: ToolRuntime,
   requested?: string,
-): Promise<Device> =>
-  resolveDevice(simulator.sessions.pick(context.sessionID, requested), {
-    signal: context.signal,
-  })
+): Promise<Device> => {
+  const wanted = simulator.sessions.pick(context.sessionID, requested)
+  if (!wanted) {
+    return Promise.reject(
+      new Error("No simulator is assigned to this session. Run sim_start or pass udid."),
+    )
+  }
+  return resolveDevice(wanted, { signal: context.signal })
+}
 
 /** Resolve a device for boot/start; it may still be shut down. */
 export const startDevice = (

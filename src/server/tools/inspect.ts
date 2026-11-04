@@ -51,7 +51,7 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
   editor.add({
     name: "status",
     description:
-      "Show the booted simulator, current app, screen size, AXe availability, and serve-sim port. Start here if a tap or read fails.",
+      "Show the booted simulator, current app, screen size, AXe availability, serve-sim port, and whether the Simulator panel is open and the agent session is running. Start here if a tap or read fails.",
     input: {
       type: "object",
       properties: { udid: UDID_SCHEMA },
@@ -81,17 +81,21 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
       const screen = snapshot?.screen
         ? `${Math.round(snapshot.screen.width)}x${Math.round(snapshot.screen.height)}`
         : "unknown"
+      const panel = simulator.activity.panelState(context.sessionID)
+      const running = simulator.activity.isRunning(context.sessionID)
       return ok(
         [
           `device=${device.name}`,
           `udid=${device.udid}`,
           `state=${device.state}`,
+          `panel=${panel}`,
+          `session=${running ? "running" : "idle"}`,
           `app=${snapshot?.app || "-"}`,
           `screen=${screen}`,
           `axe=${axeVersion}${snapshotError ? ` (UI read failed: ${snapshotError})` : ""}`,
           `serve-sim=${port ? `http://127.0.0.1:${port}` : "not running"}`,
         ].join("\n"),
-        { udid: device.udid, app: snapshot?.app, port },
+        { udid: device.udid, app: snapshot?.app, port, panel, running },
       )
     }),
   })

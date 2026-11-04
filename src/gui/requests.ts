@@ -57,4 +57,26 @@ export const requestDevice = (sessionKey: string, udid: string) => {
   })
 }
 
+/** Drop one session entry; returns the same object when nothing changes. */
+export const removeDevice = <T>(
+  devices: Readonly<Record<string, T>>,
+  sessionKey: string,
+): Readonly<Record<string, T>> => {
+  if (!(sessionKey in devices)) return devices
+  const next = { ...devices }
+  delete next[sessionKey]
+  return next
+}
+
+export const clearDevice = (sessionKey: string) => {
+  setDevices((current) => {
+    const next = removeDevice(current, sessionKey)
+    if (next === current) return current
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+    } catch {}
+    return next
+  })
+}
+
 export const requestedDevice = (sessionKey: string): string | undefined => devices()[sessionKey]

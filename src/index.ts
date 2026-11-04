@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { Plugin, Skill } from "@opencode/plugin"
 import { SIMULATOR_RPC } from "./rpc"
-import { registerTools } from "./server/tools/index"
+import { isPanelState } from "./server/activity"
+import { registerTools, type SimulatorHandle } from "./server/tools/index"
 
 const OPEN_TIMEOUT_MS = 8_000
 
@@ -33,6 +34,11 @@ export default Plugin.define({
     }
 
     const waiters = new Map<string, (opened: boolean) => void>()
+    let simulator: SimulatorHandle | undefined
+    let markSimulatorReady: ((handle: SimulatorHandle) => void) | undefined
+    const simulatorReady = new Promise<SimulatorHandle>((resolve) => {
+      markSimulatorReady = resolve
+    })
 
     const rpc = await ctx.rpc.register(SIMULATOR_RPC, {
       opened: async (input) => {
@@ -42,6 +48,20 @@ export default Plugin.define({
           // A window without the calling session's tab answers `opened: false`;
           // another window may still have it, so only a true ack settles.
           if (finish && data.opened === true) finish(true)
+        }
+        return {}
+      },
+      panel: async (input) => {
+        const data = input as { sessionID?: unknown; state?: unknown; udid?: unknown } | undefined
+        if (typeof data?.sessionID === "string" && isPanelState(data.state)) {
+          // A window can restore its panel before tool registration finishes.
+          // Wait for the handle instead of dropping the state.
+          const handle = simulator ?? (await simulatorReady)
+          await handle.panel({
+            sessionID: data.sessionID,
+            state: data.state,
+            ...(typeof data.udid === "string" && data.udid ? { udid: data.udid } : {}),
+          })
         }
         return {}
       },
@@ -66,11 +86,20 @@ export default Plugin.define({
         void rpc.events.emit("open", { request, sessionID, udid }).catch(() => finish(false))
       })
 
-    await registerTools(ctx, { hubCli: ctx.options.hubCli }, openPanel)
+    simulator = await registerTools(
+      ctx,
+      { hubCli: ctx.options.hubCli },
+      openPanel,
+      (sessionID, udid) => {
+        void rpc.events.emit("released", { sessionID, udid }).catch(() => {})
+      },
+    )
+    markSimulatorReady?.(simulator)
 
     return async () => {
       for (const finish of waiters.values()) finish(false)
       waiters.clear()
+      simulator?.dispose()
       await rpc.dispose()
     }
   },

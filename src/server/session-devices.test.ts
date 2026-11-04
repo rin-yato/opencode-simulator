@@ -46,6 +46,19 @@ describe("SessionDevices", () => {
     expect(Object.keys(data.get(SESSION_DEVICES_KEY) as object)).toHaveLength(MAX_SESSION_DEVICES)
   })
 
+  test("forgets one session and returns its device", async () => {
+    const { storage, data } = fakeStorage()
+    const sessions = await SessionDevices.load(storage)
+    await sessions.remember("ses_1", "udid-1")
+    await sessions.remember("ses_2", "udid-2")
+
+    expect(await sessions.forgetSession("ses_1")).toBe("udid-1")
+    expect(await sessions.forgetSession("ses_missing")).toBeUndefined()
+    expect(sessions.pick("ses_1")).toBeUndefined()
+    expect(sessions.pick("ses_2")).toBe("udid-2")
+    expect(Object.keys(data.get(SESSION_DEVICES_KEY) as object)).toEqual(["ses_2"])
+  })
+
   test("forgets every session that pointed at a deleted device", async () => {
     const { storage, data } = fakeStorage()
     const sessions = await SessionDevices.load(storage)

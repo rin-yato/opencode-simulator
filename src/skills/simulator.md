@@ -22,32 +22,32 @@ Tool names below are the agent-facing aliases. In Code Mode they are
 ## Start
 
 1. `sim_devices` — list simulators, state, runtime, and UDID. Add
-   `{ disk: true }` for size and `copy`/`template` tags.
-2. `sim_start({ udid?, app?, label? })` — boot if needed, launch the app by
-   bundle id, and open the Simulator panel **in the calling session**. It
-   returns `panel=...` and the serve-sim URL. The panel opens before boot
-   finishes, so a slow first boot shows the panel loader.
-3. `sim_status` — confirm device, app, screen size, AXe, and serve-sim.
+   `{ disk: true }` for size and a `free`/`in use` tag.
+2. `sim_start({ udid?, app? })` — boot if needed, launch the app by bundle id,
+   and open the Simulator panel **in the calling session**. It returns
+   `panel=...` and the serve-sim URL. The panel opens before boot finishes, so a
+   slow first boot shows the panel loader.
+3. `sim_status` — confirm device, panel state, session state, app, screen size,
+   AXe, and serve-sim.
 
 `udid` accepts a UDID, an exact device name, or a unique name fragment.
 Ambiguous fragments fail instead of guessing, so `iPhone 17` will not silently
-pick one of two copies. Every tool remembers the device this session started.
-`sim_start` also claims its device for the session: when the only candidate is
-already owned by another session, it creates a copy automatically and installs
-`app` from the source, so two sessions never share one screen by accident.
-Pass `label` with a short purpose from the task (`"create order flow"`,
-`"store profile settings"`) to name that copy semantically; the device becomes
-`iPhone 17 Pro — create order flow`. If `label` is omitted, the session title is
-used when available, falling back to `<source> Copy`. Pass `udid` only to
+pick one of two devices. Every tool remembers the device this session started.
+If the device was returned to the pool, the tool tells you to run `sim_start` or
+pass `udid`; it never falls back to another session's simulator. Without a
+`udid`, `sim_start` reuses the session's device, then takes the first free
+device of the same model and runtime, then creates `<model> #N`. It claims the
+device, so two sessions never share one screen by accident. Pass `udid` only to
 target a specific device; passing a UDID another session owns is an explicit
-choice to share it. `sim_boot` boots without opening the panel. `sim_start` is
-the normal entry.
+choice to share it. `sim_boot` boots without opening the panel; its claim is
+released when the session goes idle, so use `sim_start` when the device must
+stay across turns.
 
-The first cold copy can take minutes because a never-booted simulator prepares
-its data volume. While that session runs, the plugin prepares a shut-down
-`<model> — template` device. Later copies clone it and boot in seconds. If
-`sim_start` says `template=preparing`, the next session benefits; if it says
-`template=used`, the fast path was used.
+The first time a device is created it pays the simulator's cold boot (minutes).
+It stays in the pool after that, so later sessions reuse it and boot in seconds.
+The pool keeps up to five devices per model/runtime. When more than one
+model/runtime is installed and none is booted, pass `udid` so the pool knows
+which one to use.
 
 ## Parallel devices
 
@@ -56,23 +56,22 @@ one app state, and one set of taps: they will fight. `sim_start` prevents that
 by default:
 
 ```
-sim_start({ app: "com.example.app", label: "create order flow" })
-sim_start({ app: "com.example.app", label: "store profile settings" })
+sim_start({ app: "com.example.app" })   # first free iPhone 17 Pro
+sim_start({ app: "com.example.app" })   # next free, or iPhone 17 Pro #2
 ```
 
-The session that already owns the device keeps it; the other session gets a
-copy named after its `label`, or after the session title when no label is given.
-The copy uses the candidate's model and runtime, installs `app` from it, and
-becomes that session's default. It clones a warm template when one is ready, so
-the first cold copy is the only slow one. App data is not copied from the
-source; the copy starts with a fresh app install. If several simulators are
-already booted, an unowned one is preferred; when all belong to other sessions,
-the first booted device is the copy source.
+The first session takes a free device. The second takes the next free one, or
+the plugin creates `<model> #2` when all are busy. When `app` is given and
+`sim_start` assigns a pool device, it is installed or refreshed from the
+reference device or another booted simulator when possible; existing app data is
+kept, and data is not copied from the source. Reusing the session's own device
+just launches. Reused devices keep their installed apps and app data between
+sessions. If several simulators are already booted, an unowned one is preferred;
+when all belong to other sessions, the first booted device supplies the model
+and runtime.
 
-Choose a label from what the session is actually testing. It should be short,
-specific, and readable in `sim_devices`: `"create order flow"`,
-`"store profile settings"`, `"checkout with coupon"`. Avoid `"test"`,
-`"copy"`, or repeating the model name.
+When all five devices for a model/runtime are in use, `sim_start` fails instead
+of creating a sixth. Close a Simulator panel or delete a device to free one.
 
 Use `sim_create` when you want to choose the source or name yourself:
 
@@ -86,36 +85,25 @@ another session owns, `sim_start` answers
 `note=this simulator is also used by another session`; that is intentional
 sharing.
 
-When the parallel work is done, delete the copy with
-`sim_delete({ udid })`. It shuts the device down first and refuses if another
-session still owns it unless `force: true`. Do not delete the user's main
-simulator unless they ask.
+## Returning a device
 
-## Cleanup
+Close the Simulator panel when the parallel work is done. If the agent session
+is idle, the device returns to the pool and shuts down after about a minute;
+its data stays on disk. If the agent is still running, the device stays with the
+session until the turn ends. An open panel keeps the device even when the agent
+is idle, because the user may still be reading or tapping it.
 
-Automatic copies are leased and cleaned up after 14 days idle. Only shut-down,
-plugin-created copies are eligible; booted devices, templates, and `sim_create`
-devices are not. Check space and tags, then prune early if needed:
+Nothing is deleted automatically. Use `sim_delete({ udid })` to remove a device;
+it shuts the device down first and refuses if another session still owns it
+unless `force: true`. Do not delete the user's main simulator unless they ask.
 
-```
-sim_devices({ disk: true })
-sim_prune({ olderThanDays: 7, dryRun: true })   # list
-sim_prune({ olderThanDays: 7, dryRun: false })  # delete
-```
-
-`sim_prune` defaults to a dry run, so passing `dryRun: false` is required to
-delete. The plugin runs the same sweep on startup. A `<model> — template`
-device is the warm base for copies; do not delete one unless you want the next
-copy to be slow again (`sim_delete` is safe and the template is recreated).
-
-The panel is session-scoped. It appears in the strip of the session that
-called the tool, even if the user has switched to another session. It is also
+The panel is session-scoped. It appears in the strip of the session that called
+the tool, even if the user has switched to another session. It is also
 device-scoped: it streams the simulator `sim_start` was given, even when other
 simulators are already booted. Each session keeps its own device, so two
-sessions can test two simulators independently; switching sessions switches the
-panel to that session's device. `sim_start` only affects the session that calls
-it. If the session is not on screen, serve-sim does not start until its tab is
-shown; AXe-backed tools still work in the meantime.
+sessions can test two simulators independently. If the session is not on
+screen, serve-sim does not start until its tab is shown; AXe-backed tools still
+work in the meantime.
 
 ## Read the UI
 
@@ -198,7 +186,7 @@ screenshots between every tap.
 ## Failure handling
 
 - Ambiguous or missing device — ask which one, or pass the UDID from
-  `sim_devices`.
+  `sim_devices`. If the session has no simulator, run `sim_start`.
 - `serve-sim=not running` — the panel has not been shown yet. Open the
   Simulator tab in the calling session, or use AXe-backed tools (status, UI,
   tap, scroll, type, wait, screenshot) which do not need it.
@@ -206,14 +194,14 @@ screenshots between every tap.
   the device you want; the tab follows that device.
 - `note=this simulator is also used by another session` — you passed a UDID that
   another session owns, so sharing is intentional. Omit `udid` next time to let
-  `sim_start` create an independent copy.
-- `template=preparing` — the first cold copy is booting and a warm template is
-  being prepared in the background. Do not wait for it; the next session copies
-  in seconds. `template=used` means the fast path ran.
-- `<model> — template` in `sim_devices` is the warm base, not a session device.
-  Omit `udid` to clone it; `sim_start({ udid: "<template>" })` is refused.
-- `sim_prune` deletes nothing unless `dryRun: false` is passed. It only touches
-  shut-down automatic copies, never templates or user devices.
+  `sim_start` take an independent device.
+- All five simulators are in use — close a Simulator panel in another session or
+  delete a device with `sim_delete`. The cap prevents the pool from growing
+  forever.
+- The panel shows no simulator — its device was returned to the pool. Run
+  `sim_start` again; it takes the next free device or creates one.
+- `pool=created ...` — this call paid the cold boot for a new pool device. Later
+  sessions reuse it.
 - `sim_keyboard` fails — focus a text field with `sim_tap` first.
 - Tap misses — re-read `sim_ui`; layouts can shift after the keyboard or a
   transition. Prefer text/id over stored coordinates.
