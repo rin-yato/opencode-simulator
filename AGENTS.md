@@ -32,11 +32,12 @@ run `bun run build` after GUI changes.
 - Resolve the calling session's device. Never fall back to the focused session
   or the first booted simulator.
 - One UDID is one simulator. Two sessions on one UDID share screen and state;
-  `sim_start` allocates a free pool device by default. Use `sim_create` for an
-  explicitly named device.
+  `sim_start` allocates a free managed pool device by default. External devices
+  are reference/source only; never auto-claim, auto-refresh, or auto-shut them
+  down. Use `sim_create` for an explicitly named managed device.
 - Spawn with argument arrays (`execFile`/`spawn`), never shell strings.
-- Keep state bounded: session maps cap at 500 entries, the pool at five devices
-  per model/runtime, screenshots at 24 hours and 200 files.
+- Keep state bounded: session maps cap at 500 entries, managed devices at 200
+  with five per model/runtime, screenshots at 24 hours and 200 files.
 - Tool descriptions are agent-facing API. Update `docs/tools.md` and
   `src/skills/simulator.md` when behavior changes.
 - No telemetry or outbound requests. serve-sim binds to loopback only.

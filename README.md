@@ -15,15 +15,17 @@
 
 - **A real simulator, in the panel.** The iOS Simulator streams into a side tab.
   Tap, drag, type, rotate, and press hardware buttons without leaving OpenCode.
-- **Tools the agent can use.** 18 `sim_*` tools cover device lifecycle,
-  accessibility reads, input, UI settings, screenshots, and waits.
+- **Tools the agent can use.** 23 `sim_*` tools cover device lifecycle, app
+  install/uninstall/erase, accessibility reads, input, UI settings, screenshots,
+  waits, and explicit release.
 - **Session-scoped.** Every session remembers its simulator, and the panel opens
   in the session that called the tool, never a different one.
 - **Parallel by default.** Two sessions can run two simulators at once,
   including two of the same iPhone model.
-- **Pooled devices.** Each model keeps up to five simulators. A free one is
-  reused; a new `<model> #N` is created only when all are in use. A device
-  returns to the pool when its panel is closed and the agent session is idle.
+- **Managed pool.** The plugin creates and reuses its own simulators. Your
+  existing devices are never auto-claimed, auto-refreshed, or auto-shut down;
+  they are only a model/app reference unless you pass their UDID explicitly.
+  The pool keeps up to five managed devices per model and runtime.
 - **Bundled skill.** The plugin teaches the agent to use `sim_*` instead of
   `xcrun simctl`, Xcode, `axe`, or generated shell scripts.
 - **Local only.** The stream binds to `127.0.0.1`. No telemetry, no hosted
@@ -62,13 +64,25 @@ plugin falls back to serve-sim.
 
 ## Use
 
-Start a device and open its panel:
+Start a managed simulator and open its panel:
 
 ```text
 sim_start({ app: "com.example.app" })
 ```
 
-The panel opens in the calling session, on that exact device. Then drive it:
+The plugin creates or reuses a managed pool device. Your existing simulators are
+not claimed automatically: the first call creates `<model> #2` and uses the
+installed device only as the model/runtime and app source. The panel opens in
+the calling session, on that exact device.
+
+Install a fresh build you already produced:
+
+```text
+sim_install({ path: "/path/to/MyApp.app" })
+sim_launch({ bundleId: "com.example.app" })
+```
+
+Then drive it:
 
 ```text
 sim_ui({ mode: "interactive" })
@@ -84,53 +98,67 @@ been returned to the pool.
 ### Two sessions, same iPhone model
 
 A simulator is a UDID. Two sessions on the same UDID share one screen, app
-state, and set of taps. You do not have to manage that: `sim_start` gives each
-session a free device.
+state, and set of taps. `sim_start` gives each session its own managed device:
 
 ```text
-sim_start({ app: "com.example.app" })   # session 1
-sim_start({ app: "com.example.app" })   # session 2
+sim_start({ app: "com.example.app" })   # iPhone 17 Pro #2
+sim_start({ app: "com.example.app" })   # #3, or a free managed device
 ```
 
-The first session uses the free iPhone 17 Pro. The second gets the next free
-one, or the plugin creates `iPhone 17 Pro #2` if every device is in use. The
-pool keeps up to five per model and runtime. The first time a device is created
-it pays the cold boot (minutes); after that it stays in the pool and later
-sessions reuse it. The panel opens immediately and shows its loader during the
-boot. Reused devices keep their installed apps and app data; when `sim_start`
-assigns a pool device, it installs or refreshes the app from the reference
-device or another booted simulator without resetting existing data. Reusing the
-session's own device just launches the app.
+The first session creates `#2` from your installed iPhone 17 Pro. The second
+creates `#3`, or reuses a free managed device. The pool keeps up to five managed
+devices per model and runtime. The first time a device is created it pays the
+cold boot (minutes); after that it stays in the pool and later sessions reuse
+it. The panel opens immediately and shows its loader during the boot. Reused
+devices keep their installed apps and app data; when `sim_start` assigns a
+managed device, it installs or refreshes the app from the reference device or
+another managed simulator without resetting existing data. External devices are
+read-only sources.
 
-Close the Simulator panel when you are done. If the agent session is idle, the
-device returns to the pool and shuts down after about a minute to reclaim RAM;
-its data stays on disk. If the agent is still working, the device stays with
-that session until the turn ends. Run `sim_start` again after a release to get
-a device back.
+Close the panel or call `sim_release` when you are done. If the agent session is
+idle, the device returns to the pool and shuts down after about a minute to
+reclaim RAM; its data stays on disk. If the agent is still working, the device
+stays with that session until the turn ends. To keep a device across turns, pass
+`hold` or `holdMinutes`; `sim_release` ends the hold:
 
-To create an explicitly named device, use `sim_create` first:
+```text
+sim_start({ app: "com.example.app", holdMinutes: 30 })
+sim_release()
+```
+
+Use your own simulator explicitly; it is never auto-shut down by the pool:
+
+```text
+sim_start({ udid: "iPhone 17 Pro" })
+```
+
+Drive a simulator another session owns only with `share: true`:
+
+```text
+sim_start({ udid: "iPhone 17 Pro #2", share: true })
+```
+
+To create an explicitly named managed device, use `sim_create` first:
 
 ```text
 sim_create({ from: "iPhone 17 Pro", app: "com.example.app" })
 sim_start()
 ```
 
-List devices with sizes and free/in-use tags, and delete one when you no longer
-need it:
+List devices with sizes and owner labels, and delete one when you no longer need
+it (exact name or UDID; external/panel-owned devices need `force`):
 
 ```text
 sim_devices({ disk: true })
 sim_delete({ udid: "iPhone 17 Pro #2" })
 ```
 
-Passing the same `udid` to both sessions is still possible; that is an explicit
-choice to share.
-
 ## Tools
 
 | Tools | What they do |
 |---|---|
-| `sim_devices` `sim_boot` `sim_start` `sim_create` `sim_delete` `sim_launch` | Device and app lifecycle |
+| `sim_devices` `sim_boot` `sim_start` `sim_create` `sim_delete` `sim_release` | Device lifecycle and pool ownership |
+| `sim_install` `sim_apps` `sim_uninstall` `sim_erase` `sim_launch` | App lifecycle |
 | `sim_status` `sim_ui` `sim_wait` `sim_screenshot` | Inspect the screen |
 | `sim_tap` `sim_scroll` `sim_type` `sim_button` `sim_rotate` | Input and gestures |
 | `sim_settings` `sim_keyboard` `sim_statusbar` | UI settings |
@@ -156,14 +184,17 @@ More detail: [docs/architecture.md](docs/architecture.md).
 - Closing the panel stops its stream after 30 seconds. When the agent session is
   idle, the device returns to the pool and shuts down after about a minute. Its
   data stays on disk.
-- The pool keeps at most five devices per model and runtime. At the cap,
-  `sim_start` reports that all are in use instead of creating a sixth; close a
-  panel or delete a device to free one.
+- The pool keeps at most five managed devices per model and runtime. At the cap,
+  `sim_start` reports that all are in use instead of creating a sixth; call
+  `sim_release` or delete a device to free one.
+- External simulators are never auto-claimed, auto-refreshed, or auto-shut down.
+  Pass their UDID to use one explicitly.
 - An open panel keeps the device with its session even when the agent is idle.
-  This is deliberate: you may still be reading the screen or tapping it.
+  `hold` keeps it without a panel; `sim_release` returns it.
 - The pool only sees the embedded panel. If you interact with Simulator.app
-  directly, keep the panel open or the device may be returned to the pool.
-- `sim_delete` is destructive: it removes the simulator and all its data.
+  directly, keep the panel open or hold the device.
+- `sim_delete` requires an exact name or UDID. External and panel-owned devices
+  need `force: true`; deletion is destructive and removes all data.
 
 ## License
 
