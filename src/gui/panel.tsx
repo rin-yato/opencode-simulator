@@ -20,7 +20,7 @@ export function SimulatorPanel(props: { session: MountedSession }) {
   let attached: Attached | undefined
   let generation = 0
 
-  const connect = async (key: string, device: string | undefined) => {
+  const connect = async (key: string, device: string) => {
     if (attached && attached.key === key && attached.device === device) return
     const ticket = ++generation
     if (attached) {
@@ -53,6 +53,19 @@ export function SimulatorPanel(props: { session: MountedSession }) {
   createEffect(() => {
     const key = props.session.key
     const device = requestedDevice(key)
+    if (!device) {
+      // The device was released when this panel closed. Do not fall back to
+      // whichever simulator happens to be booted: it may belong to another
+      // session now. The next sim_start records a new device here.
+      generation += 1
+      const previous = attached
+      attached = undefined
+      setEmbed(undefined)
+      setError(undefined)
+      setLoading(false)
+      if (previous) void client.close({ embed: previous.embed }).catch(() => {})
+      return
+    }
     void connect(key, device)
   })
 
@@ -72,6 +85,7 @@ export function SimulatorPanel(props: { session: MountedSession }) {
   })
 
   onCleanup(() => {
+    generation += 1
     const previous = attached
     attached = undefined
     if (previous) void client.close({ embed: previous.embed }).catch(() => {})
@@ -119,14 +133,18 @@ export function SimulatorPanel(props: { session: MountedSession }) {
             <div style={{ "font-size": "13px", "line-height": "1.5", opacity: 0.8 }}>
               {error() ?? ctx.t("panel.empty")}
             </div>
-            <ctx.ui.Button
-              variant="neutral"
-              size="small"
-              icon="refresh"
-              onClick={() => void connect(props.session.key, requestedDevice(props.session.key))}
-            >
-              {ctx.t("panel.retry")}
-            </ctx.ui.Button>
+            <Show when={requestedDevice(props.session.key)}>
+              {(device) => (
+                <ctx.ui.Button
+                  variant="neutral"
+                  size="small"
+                  icon="refresh"
+                  onClick={() => void connect(props.session.key, device())}
+                >
+                  {ctx.t("panel.retry")}
+                </ctx.ui.Button>
+              )}
+            </Show>
           </Show>
         </div>
       </Show>

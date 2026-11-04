@@ -8,11 +8,15 @@ All tools are in the `sim` namespace. In Code Mode call them as
 - `udid` accepts a UDID, an exact device name, or a unique name fragment.
   Ambiguous matches fail and list the candidates.
 - Omitting `udid` targets the device the session started (`sim_start` or
-  `sim_boot`), then the only booted simulator. `sim_start` also claims the
-  device: if another session already owns it, a copy is created instead.
-- Automatic copies are leased. Shut-down copies idle for 14 days are removed on
-  the next plugin start or by `sim_prune`. Templates, booted devices, and
-  devices you created yourself are never auto-deleted.
+  `sim_boot`). If the session has none, the tool asks you to run `sim_start` or
+  pass `udid`; it never falls back to another session's simulator. `sim_start`
+  reuses the session's device, then the first free device of the same model and
+  runtime; when none is free it creates `<model> #N`, up to five devices per
+  model/runtime.
+- A device returns to the pool when its Simulator panel is closed and the agent
+  session is idle. The plugin shuts it down after about a minute; its data stays
+  on disk. An open panel keeps the device even when the agent is idle.
+- Nothing is deleted automatically. Use `sim_delete` to remove a device.
 - Failures return `ERROR: <message>` in the content and `metadata.ok: false`.
   They do not throw across the tool boundary.
 - Every result includes `metadata.udid` when a device was resolved.
@@ -26,13 +30,12 @@ List simulators. Booted devices come first.
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
 | `all` | boolean | `false` | Include unavailable devices |
-| `disk` | boolean | `false` | Add size and `copy`/`template` tags |
+| `disk` | boolean | `false` | Add size and a free/in-use tag |
 
 Returns a tab-separated table: name, state, runtime, UDID. With `disk: true`,
-the row gains `size` and `tag` columns. `tag` is `copy` for a plugin-managed
-copy, `template` for a warm template, and `-` otherwise. Sizes are approximate
-and only computed on request. A clone's size is logical: APFS shares blocks with
-its template, so the actual disk increase is smaller until the copy writes.
+the row gains `size` and `tag` columns. `tag` is `free` when no session or panel
+uses the device, and `in use` otherwise. Sizes are approximate and only computed
+on request.
 
 ### `sim_boot`
 
@@ -42,8 +45,11 @@ Boot a device without opening the panel.
 |---|---|---|---|
 | `udid` | string | session device | Device to boot |
 
-The device becomes the session's default. Uses `bootstatus -b`, so it returns
-after the simulator is ready.
+The device becomes the session's default and is claimed for the session. Without
+a udid it uses the same pool selection as `sim_start`. Uses `bootstatus -b`, so
+it returns after the simulator is ready. Because there is no panel, the claim is
+released when the agent session goes idle; use `sim_start` when the device must
+stay across turns.
 
 ### `sim_create`
 
@@ -52,7 +58,7 @@ Create a clean simulator from a source device's model and runtime.
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
 | `from` | string | session device | Source simulator |
-| `name` | string | `<source> Copy` | Name for the new device |
+| `name` | string | `<model> #N` | Name for the new device |
 | `app` | string | none | Bundle id to install from the source |
 
 When `app` is passed, the new device is booted and the app bundle is installed
@@ -62,8 +68,8 @@ default.
 The source keeps running. If the source app has no installed bundle for that id,
 the device is still created and the install error is reported.
 
-This is an explicit device: it is not added to the automatic copy leases and is
-not auto-pruned.
+This is an explicit device: it bypasses the automatic pool cap, is never
+auto-deleted, and joins the model pool for later `sim_start` reuse.
 
 ### `sim_delete`
 
@@ -75,26 +81,8 @@ are removed.
 | `udid` | string | required | Device to delete |
 | `force` | boolean | `false` | Delete even if another session owns it |
 
-Also clears `session-devices`, copy leases, and template records for that UDID.
-Use it for `sim_create` copies; do not delete a user's main simulator unless
-they ask. Deleting a `template` device is safe: the next copy prepares a new
-one.
-
-### `sim_prune`
-
-Delete old automatic copies. Dry run by default.
-
-| Argument | Type | Default | Meaning |
-|---|---|---|---|
-| `olderThanDays` | integer 1..365 | copy TTL (14) | Minimum idle time |
-| `dryRun` | boolean | `true` | List without deleting |
-
-Only plugin-created copies are eligible. A copy must be shut down; booted
-devices and templates are skipped. The same sweep runs on plugin start for
-copies older than the configured TTL. Set the TTL with
-`OPENCODE_SIMULATOR_COPY_TTL_DAYS` or the `copyTtlDays` plugin option; `0`
-disables both automatic cleanup and the default here (the tool then uses 14
-when `olderThanDays` is omitted).
+Also clears the session claim and panel activity for that UDID. Do not delete a
+user's main simulator unless they ask.
 
 ### `sim_start`
 
@@ -104,7 +92,6 @@ Boot, optionally launch an app, and open the panel in the calling session.
 |---|---|---|---|
 | `udid` | string | session device | Device to start |
 | `app` | string | none | Bundle id to launch after boot |
-| `label` | string | none | Purpose for an automatic copy, e.g. `create order flow` |
 
 Returns the boot result, the launched app when requested, and one of:
 
@@ -112,24 +99,25 @@ Returns the boot result, the launched app when requested, and one of:
 - `panel=opened; serve-sim starts when the Simulator tab is shown...`
 - `panel=requested...` when the calling session is not mounted
 
-Without an explicit `udid`, the session claims the chosen device. If another
-session already owns it, `sim_start` creates a copy with the same model and
-runtime, installs `app` from the source when given, and reports the copy as
-`copied=<name> (<udid>) from <source>`. With `label`, the copy is named
-`<model> — <label>` (for example `iPhone 17 Pro — create order flow`); without
-one, the session title is used when available, then the `<source> Copy`
-convention. App data is not copied.
-This keeps two sessions from sharing one screen and one set of taps by default.
-When several simulators are already booted, an unowned one is preferred; if
-every booted device belongs to another session, the first is used as the copy
-source. `label` only affects a copy, not a device the session already owns.
+Without an explicit `udid`, `sim_start` reuses the session's device, then takes
+the first free device of the same model and runtime, then creates
+`<model> #N`. The result includes `pool=created ...` when it made a device.
+When every device of that model is in use, it fails with a message: close a
+panel or delete one. This keeps two sessions from sharing one screen and one set
+of taps by default.
 
-Copies prefer a warm template: one shut-down `<model> — template` device per
-model/runtime that has already completed a boot. Cloning it is cheap on APFS and
-boots in seconds. If no template exists, the first copy takes the usual cold
-first boot and prepares a template in the background for later sessions. The
-result says `template=preparing` or `template=used`. Templates are internal;
-`sim_start({ udid: "<template>" })` is refused.
+When `app` is given and this call assigns a pool device, it is installed or
+refreshed from the reference device (the booted device whose model/runtime
+defines the pool) or another booted simulator that has it, when possible.
+Installing over an existing bundle keeps that device's app data; data is not
+copied from the source. Reusing the session's own device just launches the app. Reused devices keep their installed
+apps and app data; this tool does not reset them. When several simulators are
+already booted, an unowned one is preferred; if every booted device belongs to
+another session, the first is used as the reference.
+
+The panel tab opens before the boot finishes, so a slow first boot shows the
+panel and its loader instead of leaving the session blank. The tool still
+returns after the device is booted and the app is launched.
 
 The panel tab opens before the boot finishes, so a slow first boot shows the
 panel and its loader instead of leaving the session blank. The tool still
@@ -153,9 +141,10 @@ Terminate and relaunch an app.
 
 ### `sim_status`
 
-Return device name, UDID, state, foreground app, screen size, AXe version, and
-serve-sim URL. A freshly booted device may reject the AX read for a moment; the
-rest of the status is still returned.
+Return device name, UDID, state, panel state (`visible`, `active`, `open`, or
+`closed`), whether the agent session is running, foreground app, screen size,
+AXe version, and serve-sim URL. A freshly booted device may reject the AX read
+for a moment; the rest of the status is still returned.
 
 ### `sim_ui`
 

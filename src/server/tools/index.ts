@@ -1,37 +1,69 @@
 import type { Plugin } from "@opencode/plugin"
-import { pruneCopies } from "../cleanup"
-import { Copies, DEFAULT_COPY_TTL_DAYS } from "../copies"
+import { Activity, type PanelUpdate } from "../activity"
 import { cleanServeSimState, type HubOptions } from "../serve-sim"
 import { SessionDevices } from "../session-devices"
-import { Templates } from "../templates"
 import type { OpenPanel } from "./context"
 import { registerInputTools } from "./input"
 import { registerInspectionTools } from "./inspect"
 import { registerLifecycleTools } from "./lifecycle"
 import { registerSettingsTools } from "./settings"
 
-type SessionID = Parameters<Plugin.Context["session"]["get"]>[0]["sessionID"]
-
-/**
- * A copy is named after the flow under test. Use the session title when the
- * agent did not pass a label; a failed lookup must never block starting.
- */
-const sessionTitle = (ctx: Plugin.Context) => async (sessionID: string) => {
-  try {
-    const session = await ctx.session.get({ sessionID: sessionID as SessionID })
-    return session.title
-  } catch {
-    return undefined
-  }
+export interface SimulatorHandle {
+  /** Panel state pushed by the desktop window. */
+  readonly panel: (update: PanelUpdate) => Promise<void>
+  dispose(): void
 }
 
-const copyTtlDays = (ctx: Plugin.Context): number => {
-  const configured =
-    process.env.OPENCODE_SIMULATOR_COPY_TTL_DAYS ??
-    (typeof ctx.options.copyTtlDays === "number" ? String(ctx.options.copyTtlDays) : undefined)
-  if (configured === undefined) return DEFAULT_COPY_TTL_DAYS
-  const value = Number(configured)
-  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_COPY_TTL_DAYS
+const ACTIVITY_EVENTS = [
+  "session.execution.started",
+  "session.execution.failed",
+  "session.execution.interrupted",
+  "session.idle",
+  "session.deleted",
+  "session.archived",
+] as const
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Track agent turns so a simulator is not released while its session is still
+ * working. Panels cover the user's side; this covers the agent's.
+ *
+ * The stream can drop when the server reloads. Re-subscribe with a short delay;
+ * a missed event only leaves a claim busy, which the pool cap bounds.
+ */
+const watchActivity = (ctx: Plugin.Context, activity: Activity, signal: AbortSignal): void => {
+  void (async () => {
+    while (!signal.aborted) {
+      try {
+        for await (const event of ctx.event.subscribe({ types: ACTIVITY_EVENTS, signal })) {
+          const data = event.data as { readonly sessionID?: unknown } | undefined
+          const sessionID = typeof data?.sessionID === "string" ? data.sessionID : undefined
+          if (!sessionID) continue
+
+          switch (event.type) {
+            case "session.execution.started":
+              activity.started(sessionID)
+              break
+            case "session.execution.failed":
+            case "session.execution.interrupted":
+            case "session.idle":
+              await activity.idle(sessionID)
+              break
+            case "session.deleted":
+            case "session.archived":
+              await activity.close(sessionID)
+              break
+          }
+        }
+      } catch (cause) {
+        if (signal.aborted) return
+        console.warn("opencode-simulator: session activity stream stopped", cause)
+      }
+      if (signal.aborted) return
+      await sleep(1_000)
+    }
+  })()
 }
 
 /**
@@ -46,36 +78,15 @@ export async function registerTools(
   ctx: Plugin.Context,
   hub: HubOptions,
   openPanel?: OpenPanel,
-): Promise<void> {
+  onRelease?: (sessionID: string, udid: string) => void,
+): Promise<SimulatorHandle> {
   const sessions = await SessionDevices.load(ctx.storage)
-  const templates = await Templates.load(ctx.storage)
-  const copies = await Copies.load(ctx.storage)
-  const ttlDays = copyTtlDays(ctx)
+  const activity = new Activity({ sessions, onRelease })
+  const simulator = { hub, sessions, activity, openPanel }
+  const abort = new AbortController()
+
   void cleanServeSimState().catch(() => {})
-
-  const simulator = {
-    hub,
-    sessions,
-    templates,
-    copies,
-    copyTtlDays: ttlDays,
-    openPanel,
-    sessionTitle: sessionTitle(ctx),
-  }
-
-  // Old copies should not survive a restart forever. This is best-effort and
-  // only touches devices the plugin leased, never user devices or templates.
-  if (ttlDays > 0) {
-    void pruneCopies({
-      copies,
-      templates,
-      sessions,
-      ttlDays,
-      dryRun: false,
-    }).catch((cause) => {
-      console.warn("opencode-simulator: could not prune old copies", cause)
-    })
-  }
+  watchActivity(ctx, activity, abort.signal)
 
   await ctx.tool.transform((editor) => {
     editor.namespace({
@@ -89,4 +100,12 @@ export async function registerTools(
     registerInputTools(editor, simulator)
     registerSettingsTools(editor, simulator)
   })
+
+  return {
+    panel: (update) => activity.panel(update),
+    dispose: () => {
+      abort.abort()
+      activity.dispose()
+    },
+  }
 }

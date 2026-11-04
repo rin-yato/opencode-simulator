@@ -1,6 +1,5 @@
 import {
   bootDevice,
-  cloneDevice,
   createDeviceFrom,
   deleteDevice,
   deviceSize,
@@ -8,17 +7,16 @@ import {
   installAppFrom,
   listDevices,
   resolveDevice,
-  shutdownDevice,
+  resolveStartDevice,
   type Device,
 } from "../devices"
 import { launchApp } from "../actions"
-import { formatPrune, pruneCopies } from "../cleanup"
-import { copyDeviceName } from "../copy-name"
+import { MAX_POOL_SIZE, deviceModel, poolDeviceName, poolDevices } from "../pool"
 import { serveSimPort } from "../serve-sim"
-import type { Template } from "../templates"
 import {
   currentDevice,
   define,
+  errorText,
   ok,
   startDevice,
   SIM_OPTIONS,
@@ -48,15 +46,9 @@ interface DeleteInput {
   readonly force?: boolean
 }
 
-interface PruneInput {
-  readonly olderThanDays?: number
-  readonly dryRun?: boolean
-}
-
 interface StartInput {
   readonly udid?: string
   readonly app?: string
-  readonly label?: string
 }
 
 interface LaunchInput {
@@ -68,192 +60,168 @@ interface LaunchInput {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-let copyLock: Promise<unknown> = Promise.resolve()
+let poolLock: Promise<unknown> = Promise.resolve()
 
 /**
- * Serialize automatic copies. Two sessions starting at the same moment would
- * otherwise list the same devices and both choose the same copy name.
+ * Serialize pool selection. The claim itself is atomic, but two sessions that
+ * list at the same time could both choose to create when one new device would
+ * be enough.
  */
-const withCopyLock = <T>(task: () => Promise<T>): Promise<T> => {
-  const next = copyLock.then(task, task)
-  copyLock = next.catch(() => {})
+const withPoolLock = <T>(task: () => Promise<T>): Promise<T> => {
+  const next = poolLock.then(task, task)
+  poolLock = next.catch(() => {})
   return next
 }
 
 interface StartTarget {
   readonly device: Device
-  readonly copiedFrom?: Device
-  /** The copy came from a warm template. */
-  readonly fromTemplate?: boolean
-  /** A cold copy was made; prepare a template for the next session. */
-  readonly prepareTemplate?: boolean
-}
-
-const templateJobs = new Map<string, Promise<Template | undefined>>()
-
-const templateKeyOf = (device: Device): string => `${device.deviceType}|${device.runtimeId}`
-
-/**
- * Prepare a shutdown device that has completed one boot. Cloning it is cheap on
- * APFS and boots in seconds, so later sessions skip the multi-minute first boot
- * of a freshly created simulator. Runs in the background; a failure only means
- * the next copy is slow again.
- */
-const prepareTemplate = (
-  simulator: SimulatorContext,
-  source: Device,
-): Promise<Template | undefined> => {
-  const key = templateKeyOf(source)
-  const running = templateJobs.get(key)
-  if (running) return running
-
-  const job = (async () => {
-    const devices = await listDevices()
-    const stored = simulator.templates.get(source)
-    if (stored) {
-      const found = devices.find((device) => device.udid === stored.udid)
-      if (found) {
-        if (found.state === "Booted") await shutdownDevice(found)
-        return stored
-      }
-      await simulator.templates.forget(stored.udid)
-    }
-
-    const template = await createDeviceFrom(source, copyDeviceName(source, "template", devices))
-    try {
-      await bootDevice(template)
-      await shutdownDevice(template)
-    } catch (cause) {
-      await deleteDevice(template).catch(() => {})
-      throw cause
-    }
-    const saved: Template = {
-      udid: template.udid,
-      name: template.name,
-      deviceType: template.deviceType,
-      runtimeId: template.runtimeId,
-      createdAt: Date.now(),
-    }
-    await simulator.templates.remember(saved)
-    return saved
-  })()
-    .catch((cause) => {
-      console.warn("opencode-simulator: could not prepare a warm template", cause)
-      return undefined
-    })
-    .finally(() => {
-      templateJobs.delete(key)
-    })
-
-  templateJobs.set(key, job)
-  return job
+  /** The device whose model and runtime define the pool. */
+  readonly reference: Device
+  /** Refresh the app from the pool source. False when reusing this session's device. */
+  readonly refresh: boolean
+  /** The device did not exist before this call. */
+  readonly created?: boolean
 }
 
 /**
- * Resolve the device for `sim_start`, relaxing the "choose one" error when
- * several simulators are already booted. A new session should not be blocked
- * just because previous sessions left their devices running: it takes an
- * unowned one, or the first one as the source for its own copy.
+ * Resolve the device for `sim_start` when the session has no usable default.
+ * A new session should not be blocked just because previous sessions left
+ * devices running: it takes an unowned booted device as the reference, or the
+ * first one when every booted device belongs to another session.
  */
 const pickStartDevice = async (
   simulator: SimulatorContext,
   context: ToolRuntime,
-  requested?: string,
 ): Promise<Device> => {
   try {
-    return await startDevice(simulator, context, requested)
+    return await startDevice(simulator, context)
   } catch (cause) {
-    if (requested?.trim() || simulator.sessions.pick(context.sessionID)) throw cause
-    const booted = (await listDevices({ signal: context.signal })).filter(
-      (device) => device.state === "Booted" && !simulator.templates.has(device.udid),
-    )
-    if (booted.length === 0) throw cause
+    const devices = await listDevices({ signal: context.signal })
+    const booted = devices.filter((device) => device.state === "Booted")
+    if (booted.length > 1) {
+      return (
+        booted.find(
+          (device) => simulator.sessions.owners(device.udid, context.sessionID).length === 0,
+        ) ?? booted[0]!
+      )
+    }
     if (booted.length === 1) return booted[0]!
-    return (
-      booted.find(
-        (device) => simulator.sessions.owners(device.udid, context.sessionID).length === 0,
-      ) ?? booted[0]!
-    )
+
+    // Everything is shut down: a fresh session still has to know which pool to
+    // use. One model/runtime is unambiguous; several need an explicit udid.
+    const pools = new Map<string, Device[]>()
+    for (const device of devices) {
+      if (!device.available || !device.deviceType || !device.runtimeId) continue
+      const key = `${device.deviceType}|${device.runtimeId}`
+      const group = pools.get(key)
+      if (group) group.push(device)
+      else pools.set(key, [device])
+    }
+    if (pools.size !== 1) throw cause
+    return [...pools.values()][0]!.sort(
+      (a, b) =>
+        a.name.localeCompare(b.name, undefined, { numeric: true }) || a.udid.localeCompare(b.udid),
+    )[0]!
   }
 }
 
 /**
- * Choose the device for `sim_start`.
+ * Choose a simulator for a session.
  *
  * An explicit UDID is honored even when another session uses it: sharing is an
- * explicit choice. Without one, the device is claimed for the calling session.
- * If another session already owns it, a copy is made so both sessions test in
- * parallel instead of sharing one screen and one set of taps. Copies prefer a
- * warm template, which turns a multi-minute first boot into seconds.
+ * explicit choice. Without one, the session reuses its own device, then the
+ * first free device of the same model and runtime, then creates `<Model> #N`.
+ * The pool keeps up to `MAX_POOL_SIZE` devices; at the cap the session is asked
+ * to free one instead of growing forever.
  */
 const startTarget = async (
   simulator: SimulatorContext,
   context: ToolRuntime,
   requested?: string,
-  label?: string,
 ): Promise<StartTarget> => {
-  const device = await pickStartDevice(simulator, context, requested)
-  if (simulator.templates.has(device.udid)) {
-    throw new Error(
-      `${device.name} is a warm template. Omit udid to clone it, or start another simulator.`,
-    )
-  }
-  if (requested?.trim()) {
-    await simulator.copies.touch(device.udid)
-    return { device }
-  }
-  if (await simulator.sessions.claim(context.sessionID, device.udid)) {
-    await simulator.copies.touch(device.udid)
-    return { device }
+  const explicit = requested?.trim()
+  if (explicit) {
+    const device = await startDevice(simulator, context, explicit)
+    await simulator.sessions.remember(context.sessionID, device.udid)
+    simulator.activity.use(device.udid)
+    return { device, reference: device, refresh: false }
   }
 
-  const purpose = label?.trim() || (await simulator.sessionTitle?.(context.sessionID))
-  const copy = await withCopyLock(async () => {
+  // Reuse the device this session already started, even when it is shut down.
+  const remembered = simulator.sessions.pick(context.sessionID)
+  if (remembered) {
+    const device = await resolveStartDevice(remembered, { signal: context.signal }).catch(
+      () => undefined,
+    )
+    if (device) {
+      await simulator.sessions.claim(context.sessionID, device.udid)
+      simulator.activity.use(device.udid)
+      return { device, reference: device, refresh: false }
+    }
+    // The remembered device was deleted. Forget it and allocate a new one.
+    await simulator.sessions.forgetSession(context.sessionID)
+  }
+
+  const reference = await pickStartDevice(simulator, context)
+  return withPoolLock(async () => {
     const devices = await listDevices({ signal: context.signal })
-    const stored = simulator.templates.get(device)
-    if (stored) {
-      const template = devices.find((candidate) => candidate.udid === stored.udid)
-      if (template) {
-        try {
-          if (template.state === "Booted") {
-            await shutdownDevice(template, { signal: context.signal })
-          }
-          const cloned = await cloneDevice(
-            { ...template, state: "Shutdown" },
-            copyDeviceName(device, purpose, devices),
-            { signal: context.signal },
-          )
-          return { device: cloned, fromTemplate: true }
-        } catch (cause) {
-          // A broken template must not block starting; fall back to a cold copy.
-          console.warn("opencode-simulator: template clone failed; creating a fresh copy", cause)
-        }
-      } else {
-        await simulator.templates.forget(stored.udid)
+    const source = devices.find((device) => device.udid === reference.udid) ?? reference
+    const candidates = poolDevices(source, devices)
+
+    for (const candidate of candidates) {
+      if (simulator.sessions.owners(candidate.udid, context.sessionID).length > 0) continue
+      if (simulator.activity.isBusy(candidate.udid, context.sessionID)) continue
+      if (await simulator.sessions.claim(context.sessionID, candidate.udid)) {
+        simulator.activity.use(candidate.udid)
+        return { device: candidate, reference: source, refresh: true }
       }
     }
 
-    const created = await createDeviceFrom(device, copyDeviceName(device, purpose, devices), {
+    if (candidates.length >= MAX_POOL_SIZE) {
+      throw new Error(
+        `All ${MAX_POOL_SIZE} ${deviceModel(source)} simulators are in use. Close a Simulator panel, wait for the agent to finish, or delete one with sim_delete.`,
+      )
+    }
+
+    const created = await createDeviceFrom(source, poolDeviceName(source, devices), {
       signal: context.signal,
     })
-    return { device: created, fromTemplate: false }
+    await simulator.sessions.claim(context.sessionID, created.udid)
+    simulator.activity.use(created.udid)
+    return { device: created, reference: source, refresh: true, created: true }
   })
+}
 
-  await simulator.sessions.claim(context.sessionID, copy.device.udid)
-  const now = Date.now()
-  await simulator.copies.remember({
-    udid: copy.device.udid,
-    sessionID: context.sessionID,
-    name: copy.device.name,
-    createdAt: now,
-    lastUsedAt: now,
-  })
-  return {
-    device: copy.device,
-    copiedFrom: device,
-    fromTemplate: copy.fromTemplate,
-    prepareTemplate: !copy.fromTemplate,
+/**
+ * Install or refresh the app from the reference device. Installing over an
+ * existing bundle preserves its data container, so this is how a reused pool
+ * device gets the current build. When the reference is shut down or lacks the
+ * bundle, try any booted simulator.
+ */
+const installApp = async (
+  target: Device,
+  source: Device,
+  bundleId: string,
+  signal?: AbortSignal,
+): Promise<string> => {
+  const booted = (await listDevices({ signal })).filter(
+    (device) => device.state === "Booted" && device.udid !== target.udid,
+  )
+  const candidates = [source, ...booted.filter((device) => device.udid !== source.udid)]
+  let lastError: unknown
+  for (const candidate of candidates) {
+    if (candidate.udid === target.udid) continue
+    try {
+      const path = await installAppFrom(target.udid, candidate.udid, bundleId, { signal })
+      return `app=${bundleId} (installed from ${candidate.name}: ${path})`
+    } catch (cause) {
+      lastError = cause
+    }
   }
+  if (lastError) throw lastError
+  // The target is the only candidate (it is the source). Its bundle is already
+  // whatever the user installed there; launching is the only useful step.
+  return ""
 }
 
 const waitForHub = async (udid: string, timeout = 8_000): Promise<number | undefined> => {
@@ -270,7 +238,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
   editor.add({
     name: "devices",
     description:
-      "List simulators with state, runtime, and UDID. Use this before sim_boot or sim_start when you need to pick a device. Booted devices are listed first. Pass disk to add on-disk size and copy/template tags.",
+      "List simulators with state, runtime, and UDID. Use this before sim_boot or sim_start when you need to pick a device. Booted devices are listed first. Pass disk to add on-disk size and a free/in-use tag.",
     input: {
       type: "object",
       properties: {
@@ -282,7 +250,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
         disk: {
           type: "boolean",
           default: false,
-          description: "Add on-disk size and copy/template tags (slower).",
+          description: "Add on-disk size and a free/in-use tag (slower).",
         },
       },
       additionalProperties: false,
@@ -295,7 +263,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
       devices.sort(
         (a, b) =>
           Number(b.state === "Booted") - Number(a.state === "Booted") ||
-          a.name.localeCompare(b.name) ||
+          a.name.localeCompare(b.name, undefined, { numeric: true }) ||
           a.udid.localeCompare(b.udid),
       )
       const sizes = input.disk
@@ -313,12 +281,10 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
           lines.push(row)
           continue
         }
-        const tag = simulator.templates.has(device.udid)
-          ? "template"
-          : simulator.copies.has(device.udid)
-            ? "copy"
-            : "-"
-        lines.push(`${row}\t${formatSize(sizes[index])}\t${tag}`)
+        const inUse =
+          simulator.sessions.owners(device.udid).length > 0 ||
+          simulator.activity.isBusy(device.udid)
+        lines.push(`${row}\t${formatSize(sizes[index])}\t${inUse ? "in use" : "free"}`)
       }
       return ok(lines.join("\n"), { count: devices.length })
     }),
@@ -327,7 +293,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
   editor.add({
     name: "boot",
     description:
-      "Boot a simulator by UDID or name, without opening Simulator.app. Defaults to this session's device, then the only booted device, then the only installed device. Use sim_start to also open the Simulator panel.",
+      "Boot a simulator by UDID or name, without opening Simulator.app. Without a udid it reuses this session's device, then takes a free device from the pool. Use sim_start to also open the Simulator panel.",
     input: {
       type: "object",
       properties: { udid: UDID_SCHEMA },
@@ -335,32 +301,27 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
     },
     options: SIM_OPTIONS,
     execute: define(async (input: BootInput, context: ToolRuntime) => {
-      const device = await startDevice(simulator, context, input.udid)
-      if (simulator.templates.has(device.udid)) {
-        throw new Error(`${device.name} is a warm template; omit the udid to clone it instead.`)
-      }
-      const output = await bootDevice(device, { signal: context.signal })
-      await simulator.sessions.remember(context.sessionID, device.udid)
-      await simulator.copies.touch(device.udid)
-      return ok(output, { udid: device.udid, name: device.name })
+      const target = await startTarget(simulator, context, input.udid)
+      const output = await bootDevice(target.device, { signal: context.signal })
+      return ok(output, { udid: target.device.udid, name: target.device.name })
     }),
   })
 
   editor.add({
     name: "create",
     description:
-      "Create a new simulator with the same model and runtime as a source simulator, leaving the source running. Optionally install an app that is installed on the source. Use this when two sessions need the same device without sharing one UDID.",
+      "Create a new simulator with the same model and runtime as a source simulator, leaving the source running. Optionally install an app that is installed on the source. Use this for an explicitly named device, or when you need more control than the automatic pool.",
     input: {
       type: "object",
       properties: {
         from: {
           type: "string",
           description:
-            "Source simulator name or UDID. Defaults to this session's device, then the only booted simulator.",
+            "Source simulator name or UDID. Defaults to this session's device, then the only booted simulator, then the only installed simulator.",
         },
         name: {
           type: "string",
-          description: "Name for the new simulator. Defaults to '<source> Copy', made unique.",
+          description: "Name for the new simulator. Defaults to '<model> #N', made unique.",
         },
         app: {
           type: "string",
@@ -373,7 +334,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
     execute: define(async (input: CreateInput, context: ToolRuntime) => {
       const source = await startDevice(simulator, context, input.from)
       const devices = await listDevices({ signal: context.signal })
-      const name = input.name?.trim() || copyDeviceName(source, undefined, devices)
+      const name = input.name?.trim() || poolDeviceName(source, devices)
       if (devices.some((device) => device.name === name)) {
         throw new Error(`A simulator named "${name}" already exists. Pass another name.`)
       }
@@ -391,10 +352,11 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
           })
           installed = `app=${input.app} (installed from ${path})`
         } catch (cause) {
-          installError = `app=install failed: ${cause instanceof Error ? cause.message : String(cause)}`
+          installError = `app=install failed: ${errorText(cause)}`
         }
       }
-      await simulator.sessions.remember(context.sessionID, created.udid)
+      await simulator.sessions.claim(context.sessionID, created.udid)
+      simulator.activity.use(created.udid)
 
       const lines = [
         `created ${created.name} (${created.udid}) from ${source.name} (${source.udid})`,
@@ -414,7 +376,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
   editor.add({
     name: "delete",
     description:
-      "Delete a simulator by UDID or name, shutting it down first. Destructive: the device and all its data are removed. Use it to clean up sim_create copies. Refuses when another session owns the device unless force is true.",
+      "Delete a simulator by UDID or name, shutting it down first. Destructive: the device and all its data are removed. Refuses when another session owns the device unless force is true.",
     input: {
       type: "object",
       properties: {
@@ -442,59 +404,15 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
 
       const output = await deleteDevice(device, { signal: context.signal })
       await simulator.sessions.forget(device.udid)
-      await simulator.copies.forget(device.udid)
-      await simulator.templates.forget(device.udid)
+      simulator.activity.forget(device.udid)
       return ok(output, { udid: device.udid, name: device.name })
-    }),
-  })
-
-  editor.add({
-    name: "prune",
-    description:
-      "Delete old automatic simulator copies. Only copies created by sim_start are eligible, they must be shut down, and templates are never touched. Defaults to a dry run.",
-    input: {
-      type: "object",
-      properties: {
-        olderThanDays: {
-          type: "integer",
-          minimum: 1,
-          maximum: 365,
-          description:
-            "Delete copies idle for at least this many days. Defaults to the configured copy TTL.",
-        },
-        dryRun: {
-          type: "boolean",
-          default: true,
-          description: "List what would be deleted without deleting it.",
-        },
-      },
-      additionalProperties: false,
-    },
-    options: SIM_OPTIONS,
-    execute: define(async (input: PruneInput, context: ToolRuntime) => {
-      const ttlDays =
-        input.olderThanDays ?? (simulator.copyTtlDays > 0 ? simulator.copyTtlDays : 14)
-      const result = await pruneCopies({
-        copies: simulator.copies,
-        templates: simulator.templates,
-        sessions: simulator.sessions,
-        ttlDays,
-        dryRun: input.dryRun !== false,
-        signal: context.signal,
-      })
-      return ok(formatPrune(result), {
-        deleted: result.deleted.length,
-        wouldDelete: result.wouldDelete.length,
-        skipped: result.skipped.length,
-        missing: result.missing,
-      })
     }),
   })
 
   editor.add({
     name: "start",
     description:
-      "Start the simulator end to end: boot the device if needed, optionally launch an app, and open the Simulator panel in the session that called this tool. Omitting udid gives the session its own device; if another session already owns the only candidate, a copy is created so the two sessions do not share one simulator. Pass label to name that copy after the flow under test.",
+      "Start the simulator end to end: boot the device if needed, optionally launch an app, and open the Simulator panel in the session that called this tool. Omitting udid reuses this session's device, then the first free device of the same model and runtime; when none is free, it creates <model> #N (up to five per model and runtime).",
     input: {
       type: "object",
       properties: {
@@ -502,82 +420,75 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
         app: {
           type: "string",
           description:
-            "Optional bundle id to launch after boot, e.g. com.example.app. When sim_start has to copy a device, it installs this app from the source first.",
-        },
-        label: {
-          type: "string",
-          description:
-            "Optional short purpose for this session's simulator, e.g. 'create order flow' or 'store profile settings'. Used only when sim_start has to copy another session's device; the copy is named '<model> — <label>'. Defaults to the session title when omitted.",
+            "Optional bundle id to launch after boot, e.g. com.example.app. When this call assigns a pool device, the app is installed or refreshed from the reference device or another booted simulator; existing app data is kept. Reusing the session's device just launches.",
         },
       },
       additionalProperties: false,
     },
     options: SIM_OPTIONS,
     execute: define(async (input: StartInput, context: ToolRuntime) => {
-      const target = await startTarget(simulator, context, input.udid, input.label)
-      const { device, copiedFrom, fromTemplate, prepareTemplate: needsTemplate } = target
-      const shared =
-        !copiedFrom && simulator.sessions.owners(device.udid, context.sessionID).length > 0
-      if (!simulator.openPanel) throw new Error("The Simulator window entry is not available.")
+      const openPanel = simulator.openPanel
+      if (!openPanel) throw new Error("The Simulator window entry is not available.")
+      const target = await startTarget(simulator, context, input.udid)
+      const { device, reference, created, refresh } = target
 
       // Open the tab before boot. The panel starts its hub immediately and
       // serve-sim waits for the device, so the user sees the simulator (or a
-      // loader) while a fresh device's multi-minute first boot runs.
-      const panel = simulator.openPanel(device.udid, context.sessionID).catch(() => false)
+      // loader) while a fresh device's first boot runs. Tell the server the
+      // panel exists as soon as the window acknowledges; the window also
+      // reports the precise layout state, but a fast turn can go idle before
+      // that update arrives.
+      const panel = openPanel(device.udid, context.sessionID)
+        .then(async (opened) => {
+          if (opened) {
+            await simulator.activity.panel({
+              sessionID: context.sessionID,
+              udid: device.udid,
+              state: "open",
+            })
+          }
+          return opened
+        })
+        .catch(() => false)
       const boot = await bootDevice(device, { signal: context.signal })
 
       let installed = ""
       let installError = ""
-      if (copiedFrom && input.app) {
+      let launched = ""
+      let launchError = ""
+      if (input.app) {
+        if (refresh) {
+          try {
+            installed = await installApp(device, reference, input.app, context.signal)
+          } catch (cause) {
+            installError = `app=install failed: ${errorText(cause)}`
+          }
+        }
+        // Launch even after an install failure: the device may already have a
+        // working copy, and the launch error is useful when it does not.
         try {
-          const path = await installAppFrom(device.udid, copiedFrom.udid, input.app, {
+          launched = await launchApp(device.udid, input.app, {
             signal: context.signal,
+            terminate: false,
           })
-          installed = `app=${input.app} (installed from ${copiedFrom.name}: ${path})`
         } catch (cause) {
-          installError = `app=install failed: ${
-            cause instanceof Error ? cause.message : String(cause)
-          }`
+          launchError = `app=launch failed: ${errorText(cause)}`
         }
       }
 
-      await simulator.sessions.remember(context.sessionID, device.udid)
-
-      // A copy starts with a fresh install, so launch only after installing the
-      // requested app. When the install failed, launching would only add a
-      // second, less useful error.
-      let launched = ""
-      if (input.app && !installError) {
-        launched = await launchApp(device.udid, input.app, {
-          signal: context.signal,
-          terminate: false,
-        })
-      }
-
+      const shared = simulator.sessions.owners(device.udid, context.sessionID).length > 0
       const opened = await panel
       const port = opened ? await waitForHub(device.udid, 3_000) : undefined
 
-      // A cold copy paid the multi-minute first boot. Prepare a template after
-      // this call so future sessions can clone it in seconds.
-      if (needsTemplate && copiedFrom) {
-        const source = copiedFrom
-        setTimeout(() => void prepareTemplate(simulator, source), 2_000)
-      }
-
       const lines = [
         boot,
-        ...(copiedFrom
-          ? [
-              `copied=${device.name} (${device.udid}) from ${copiedFrom.name} (${copiedFrom.udid}); the source stays with its session`,
-            ]
-          : []),
-        ...(fromTemplate ? ["template=used"] : []),
-        ...(needsTemplate
-          ? ["template=preparing in the background; the next session copies in seconds"]
+        ...(created
+          ? [`pool=created ${device.name} (${device.udid}); kept for later sessions`]
           : []),
         ...(installed ? [installed] : []),
         ...(installError ? [installError] : []),
         ...(launched ? [`app=${input.app}`, launched] : []),
+        ...(launchError ? [launchError] : []),
         ...(shared
           ? [
               "note=this simulator is also used by another session; pass that udid only when sharing is intended.",
@@ -594,8 +505,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
         name: device.name,
         port,
         panel: opened,
-        ...(copiedFrom ? { copiedFrom: copiedFrom.udid } : {}),
-        ...(fromTemplate ? { template: true } : {}),
+        ...(created ? { created: true } : {}),
       })
     }),
   })

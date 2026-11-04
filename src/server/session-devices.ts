@@ -92,6 +92,15 @@ export class SessionDevices {
     await this.#persist?.(this.#snapshot())
   }
 
+  /** Forget one session; returns the UDID it pointed at. */
+  async forgetSession(sessionID: string): Promise<string | undefined> {
+    const udid = this.#devices.get(sessionID)
+    if (!udid) return undefined
+    this.#devices.delete(sessionID)
+    await this.#persist?.(this.#snapshot())
+    return udid
+  }
+
   /** Forget every session that points at a deleted simulator. */
   async forget(udid: string): Promise<void> {
     let changed = false
