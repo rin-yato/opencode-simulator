@@ -6,36 +6,40 @@ All tools are in the `sim` namespace. In Code Mode call them as
 ## Common behavior
 
 - `udid` accepts a UDID, an exact device name, or a unique name fragment.
-  Ambiguous matches fail and list the candidates.
+  Ambiguous matches fail and list the candidates. `sim_delete` is stricter: it
+  requires an exact name or UDID. An explicit device another session owns
+  requires `share: true` on every tool.
 - Omitting `udid` targets the device the session started (`sim_start` or
   `sim_boot`). If the session has none, the tool asks you to run `sim_start` or
-  pass `udid`; it never falls back to another session's simulator. `sim_start`
-  reuses the session's device, then the first free device of the same model and
-  runtime; when none is free it creates `<model> #N`, up to five devices per
-  model/runtime.
-- A device returns to the pool when its Simulator panel is closed and the agent
-  session is idle. The plugin shuts it down after about a minute; its data stays
-  on disk. An open panel keeps the device even when the agent is idle.
-- Nothing is deleted automatically. Use `sim_delete` to remove a device.
+  pass `udid`; it never falls back to another session's simulator.
+- Auto allocation is managed-only. `sim_start` reuses the session's managed
+  device, then the first free managed device of the same model and runtime, then
+  creates `<model> #N`, up to five managed devices per model/runtime. An
+  external simulator supplies the model/runtime and app source but is not
+  claimed, refreshed, or shut down.
+- A device returns to the pool when its panel closes and the agent session is
+  idle. A `hold` keeps it across turns; `sim_release` returns it now. The plugin
+  shuts released devices down after about a minute; data stays on disk.
+- Nothing is deleted automatically. Use `sim_delete` with an exact name/UDID.
 - Failures return `ERROR: <message>` in the content and `metadata.ok: false`.
-  They do not throw across the tool boundary.
-- Every result includes `metadata.udid` when a device was resolved.
+  `status` is `ok`, `partial`, `error`, or `timeout`. Every result includes
+  `metadata.udid` when a device was resolved.
 
 ## Lifecycle
 
 ### `sim_devices`
 
-List simulators. Booted devices come first.
+List simulators. Booted devices come first. The owner column is always present:
+`self`, `other`, `free`, or `external`.
 
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
 | `all` | boolean | `false` | Include unavailable devices |
-| `disk` | boolean | `false` | Add size and a free/in-use tag |
+| `disk` | boolean | `false` | Add approximate on-disk size (slower) |
 
-Returns a tab-separated table: name, state, runtime, UDID. With `disk: true`,
-the row gains `size` and `tag` columns. `tag` is `free` when no session or panel
-uses the device, and `in use` otherwise. Sizes are approximate and only computed
-on request.
+Returns a tab-separated table: name, state, runtime, UDID, owner. With
+`disk: true`, a `size` column is added. `metadata.devices` carries the same rows
+as objects for Code Mode. `external` devices are not managed by the pool.
 
 ### `sim_boot`
 
@@ -44,32 +48,34 @@ Boot a device without opening the panel.
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
 | `udid` | string | session device | Device to boot |
+| `share` | boolean | `false` | Allow an explicit UDID another session owns |
+| `hold` | boolean | `false` | Keep the device after this turn |
+| `holdMinutes` | integer 1..1440 | none | Bound the hold; implies `hold` |
 
-The device becomes the session's default and is claimed for the session. Without
-a udid it uses the same pool selection as `sim_start`. Uses `bootstatus -b`, so
-it returns after the simulator is ready. Because there is no panel, the claim is
-released when the agent session goes idle; use `sim_start` when the device must
-stay across turns.
+The device becomes the session's default and is claimed. Without a udid it uses
+the same managed-pool selection as `sim_start`; it may create `<model> #N`
+(cold boot). Uses `bootstatus -b`, so it returns after the simulator is ready.
+Without `hold`, the claim is released when the agent session goes idle.
 
 ### `sim_create`
 
-Create a clean simulator from a source device's model and runtime.
+Create a clean managed simulator from a source device's model and runtime.
 
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
 | `from` | string | session device | Source simulator |
 | `name` | string | `<model> #N` | Name for the new device |
 | `app` | string | none | Bundle id to install from the source |
+| `force` | boolean | `false` | Create beyond five managed devices |
 
 When `app` is passed, the new device is booted and the app bundle is installed
-from the source. App data is not copied. The new device becomes the session's
-default.
+from the source. App data is not copied. The new device is managed and becomes
+the session's default. The result says `state=Booted` or `state=Shutdown`; use
+`sim_start` to boot and open its panel.
 
 The source keeps running. If the source app has no installed bundle for that id,
-the device is still created and the install error is reported.
-
-This is an explicit device: it bypasses the automatic pool cap, is never
-auto-deleted, and joins the model pool for later `sim_start` reuse.
+the device is still created and the result is `partial`. A boot/claim failure
+deletes the newly created device.
 
 ### `sim_delete`
 
@@ -78,11 +84,13 @@ are removed.
 
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
-| `udid` | string | required | Device to delete |
-| `force` | boolean | `false` | Delete even if another session owns it |
+| `udid` | string | required | Exact UDID or exact name |
+| `force` | boolean | `false` | Allow external, panel-owned, or other-session devices |
 
-Also clears the session claim and panel activity for that UDID. Do not delete a
-user's main simulator unless they ask.
+Deleting a managed free device needs no force. External devices, devices with an
+open panel, and devices owned by another session require `force: true`. The
+window clears the device, the hub stops, and a deleted event prevents the next
+heartbeat from re-claiming it.
 
 ### `sim_start`
 
@@ -92,44 +100,84 @@ Boot, optionally launch an app, and open the panel in the calling session.
 |---|---|---|---|
 | `udid` | string | session device | Device to start |
 | `app` | string | none | Bundle id to launch after boot |
+| `share` | boolean | `false` | Allow an explicit UDID another session owns |
+| `hold` | boolean | `false` | Keep the device after this turn |
+| `holdMinutes` | integer 1..1440 | none | Bound the hold; implies `hold` |
 
-Returns the boot result, the launched app when requested, and one of:
+Returns the boot result, `release=held|panel|turn|idle`, the launched app when
+requested, and one of:
 
 - `panel=opened serve-sim=http://127.0.0.1:<port>`
-- `panel=opened; serve-sim starts when the Simulator tab is shown...`
+- `panel=opened; serve-sim is still starting in the panel.`
 - `panel=requested...` when the calling session is not mounted
 
-Without an explicit `udid`, `sim_start` reuses the session's device, then takes
-the first free device of the same model and runtime, then creates
-`<model> #N`. The result includes `pool=created ...` when it made a device.
-When every device of that model is in use, it fails with a message: close a
-panel or delete one. This keeps two sessions from sharing one screen and one set
-of taps by default.
+Without an explicit `udid`, `sim_start` reuses the session's managed device,
+then takes the first free managed device of the same model and runtime, then
+creates `<model> #N`. External simulators are never auto-claimed. An explicit
+UDID may target an external device or another session (the latter requires
+`share: true`).
 
-When `app` is given and this call assigns a pool device, it is installed or
-refreshed from the reference device (the booted device whose model/runtime
-defines the pool) or another booted simulator that has it, when possible.
-Installing over an existing bundle keeps that device's app data; data is not
-copied from the source. Reusing the session's own device just launches the app. Reused devices keep their installed
-apps and app data; this tool does not reset them. When several simulators are
-already booted, an unowned one is preferred; if every booted device belongs to
-another session, the first is used as the reference.
+When `app` is given and this call assigns a managed device, it is installed or
+refreshed from the reference device or another managed simulator. Installing
+over an existing bundle keeps app data. Reusing the session's own or an external
+device just launches. Install/launch failures return `status: "partial"` with
+`ok: false`.
 
-The panel tab opens before the boot finishes, so a slow first boot shows the
-panel and its loader instead of leaving the session blank. The tool still
-returns after the device is booted and the app is launched.
+### `sim_release`
 
-The panel tab opens before the boot finishes, so a slow first boot shows the
-panel and its loader instead of leaving the session blank. The tool still
-returns after the device is booted and the app is launched.
+Release this session's simulator now, clearing its claim, hold, and panel.
 
-Passing a UDID that another session owns is treated as an explicit choice to
-share; the result then includes
-`note=this simulator is also used by another session`.
+| Argument | Type | Default | Meaning |
+|---|---|---|---|
+| `udid` | string | session device | Optional exact device to release |
+
+Use it when a device was held or the agent is done before closing the panel. An
+automatic release still happens when the panel closes and the session is idle.
+
+### `sim_install`
+
+Install a local `.app` bundle on the session's simulator.
+
+| Argument | Type | Default | Meaning |
+|---|---|---|---|
+| `path` | string | required | Path to a `.app` bundle |
+| `udid` | string | session device | Target device |
+| `share` | boolean | `false` | Allow a UDID another session owns |
+
+Boots the device if needed. This is the supported way to test a fresh build.
+
+### `sim_apps`
+
+List installed apps as bundle id and name. Boots the device if needed.
+
+| Argument | Type | Default | Meaning |
+|---|---|---|---|
+| `udid` | string | session device | Target device |
+
+### `sim_uninstall`
+
+Uninstall an app bundle from the session's simulator.
+
+| Argument | Type | Default | Meaning |
+|---|---|---|---|
+| `bundleId` | string | required | Bundle identifier |
+| `udid` | string | session device | Target device |
+| `share` | boolean | `false` | Allow a UDID another session owns |
+
+### `sim_erase`
+
+Erase a simulator's contents and settings, removing all app data. **Destructive.**
+Requires `force: true`. The device is left shut down.
+
+| Argument | Type | Default | Meaning |
+|---|---|---|---|
+| `udid` | string | session device | Target device |
+| `force` | boolean | `false` | Confirm the data loss |
 
 ### `sim_launch`
 
-Terminate and relaunch an app.
+Terminate and relaunch an app. This resets the app's in-memory state, not its
+data; use `sim_erase` or a new device for a clean data state.
 
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
@@ -141,10 +189,12 @@ Terminate and relaunch an app.
 
 ### `sim_status`
 
-Return device name, UDID, state, panel state (`visible`, `active`, `open`, or
-`closed`), whether the agent session is running, foreground app, screen size,
-AXe version, and serve-sim URL. A freshly booted device may reject the AX read
-for a moment; the rest of the status is still returned.
+Return device name, UDID, state, `managed=yes|no`, panel state (`visible`,
+`active`, `open`, or `closed`), the panel's device when it differs, release
+state (`held`, `panel`, `turn`, or `idle`), whether the agent session is
+running, foreground app, screen size, AXe version, and serve-sim URL. A freshly
+booted device may reject the AX read for a moment; the rest of the status is
+still returned.
 
 ### `sim_ui`
 
@@ -156,8 +206,9 @@ Read the compact accessibility table.
 | `max` | integer 1..200 | `40` | Row cap |
 | `find` | string | none | Case-insensitive label/id/value filter |
 
-Each row is `idx`, `type`, `label`, `id`, `value`, and a logical tap point. The
-tap point is for reading; `sim_tap` takes selectors or normalized `x`/`y`.
+Each row is `idx`, `type`, `label`, `id`, `value`, and a logical tap point.
+`sim_tap` accepts that logical point directly, or normalized `x`/`y` when both
+coordinates are `0..1`.
 
 ### `sim_wait`
 
@@ -169,8 +220,9 @@ Poll for text until it is visible.
 | `timeout` | number 0.1..60 | `5` | Seconds before giving up |
 | `interval` | number 0.1..5 | `0.3` | Poll interval |
 
-Returns `PASS <type> "<text>" tap=<point>` or `FAIL "<text>" ...`. If the row
-exists but is off-screen, the failure says which direction to scroll.
+Returns `PASS <type> "<text>" tap=<point>` or `FAIL "<text>" ...` with
+`metadata.ok: false` and `status: "timeout"`. If the row exists but is
+off-screen, the failure says which direction to scroll.
 
 ### `sim_screenshot`
 
@@ -197,9 +249,12 @@ Tap exactly one target:
 | `label` | `{ label: "Close" }` | Exact `AXLabel` |
 | `value` | `{ value: "On" }` | Exact `AXValue` |
 | point | `{ x: 0.5, y: 0.8 }` | Normalized 0..1 |
+| point | `{ x: 200, y: 640 }` | Logical points from `sim_ui` |
 
 `elementType` narrows a selector, for example `Button`. `wait` waits up to 30
-seconds for the selector. Off-screen targets fail; scroll first.
+seconds for the selector or text. `nth` picks a visible match when text is
+ambiguous; without it, multiple visible interactive matches fail instead of
+guessing. Off-screen targets fail; scroll first.
 
 ### `sim_scroll`
 
@@ -222,14 +277,14 @@ Tap the field first. The software keyboard does not need to be visible.
 ### `sim_button`
 
 Press `home`, `lock`, `side-button`, `siri`, or `apple-pay`. `duration` holds for
-0..10 seconds. Uses serve-sim's HID path first, then AXe with Simulator.app
-focused.
+0..10 seconds and uses the AXe path with Simulator.app focused; a duration of 0
+uses serve-sim's HID path.
 
 ### `sim_rotate`
 
 Rotate to `portrait`, `portrait_upside_down`, `landscape_left`, or
-`landscape_right` through serve-sim. Some apps are portrait-only; success does
-not guarantee the app rotated.
+`landscape_right` through serve-sim. Requires the Simulator panel to be open.
+Some apps are portrait-only; success does not guarantee the app rotated.
 
 ## Settings
 
@@ -245,11 +300,11 @@ Settings: `appearance`, `liquid-glass`, `text-size`, `reduce-motion`,
 `voiceover`, `hardware-keyboard`.
 
 Examples: `dark`, `light`, `large`, `extra-large`, `on`, `off`, `grayscale`,
-`tinted`.
+`tinted`. Requires the Simulator panel to be open (serve-sim).
 
 ### `sim_keyboard`
 
-`state`: `show`, `hide`, or `toggle` (default). Requires serve-sim, so the
+`state`: `show` (default), `hide`, or `toggle`. Requires serve-sim, so the
 Simulator panel must be open. Focus a text field first with `sim_tap`.
 
 ### `sim_statusbar`
