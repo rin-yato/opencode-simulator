@@ -30,7 +30,7 @@ All tools are in the `sim` namespace. In Code Mode call them as
 ### `sim_devices`
 
 List simulators. Booted devices come first. The owner column is always present:
-`self`, `other`, `free`, or `external`.
+`in use (self)`, `in use (other)`, `free`, or `external`.
 
 | Argument | Type | Default | Meaning |
 |---|---|---|---|

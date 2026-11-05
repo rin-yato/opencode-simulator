@@ -23,7 +23,8 @@ Tool names below are the agent-facing aliases. In Code Mode they are
 ## Start
 
 1. `sim_devices` — list simulators with state, runtime, UDID, and owner
-   (`self`, `other`, `free`, `external`). Add `{ disk: true }` for sizes.
+   (`in use (self)`, `in use (other)`, `free`, `external`). Add `{ disk: true }`
+   for sizes.
 2. `sim_start({ udid?, app?, share?, hold?, holdMinutes? })` — boot a **managed**
    device, launch the
    app by bundle id, and open the Simulator panel **in the calling session**. It

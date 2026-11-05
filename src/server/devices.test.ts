@@ -30,6 +30,11 @@ describe("matchDevice", () => {
     expect(matchDevice(devices, "17e").udid).toBe("udid-17e")
   })
 
+  test("matches a marked device by its plain name", () => {
+    const marked = [device("iPhone 17 Pro 2 · in use", "udid-17-pro-2")]
+    expect(matchDevice(marked, "iPhone 17 Pro 2").udid).toBe("udid-17-pro-2")
+  })
+
   test("refuses an ambiguous fragment instead of guessing", () => {
     expect(() => matchDevice(devices, "iPhone 17")).toThrow(/matches multiple simulators/)
   })

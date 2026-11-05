@@ -79,7 +79,7 @@ export class SimulatorPool {
     await this.#rename(udid, busy ? inUseName(base) : base)
   }
 
-  /** Repair names after a restart: a stale `· in use` mark must not stick. */
+  /** Repair names after a restart: a mark that outlived its claim is stripped. */
   async reconcileNames(): Promise<void> {
     let devices: readonly Device[]
     try {

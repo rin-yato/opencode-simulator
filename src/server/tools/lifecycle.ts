@@ -301,18 +301,23 @@ const resolveExactDevice = async (wanted: string): Promise<Device> => {
   }
   const devices = await listDevices()
   const needle = text.toLowerCase()
-  const found = devices.find(
+  const found = devices.filter(
     (device) =>
       device.udid.toLowerCase() === needle ||
       device.name === text ||
       baseName(device.name) === text,
   )
-  if (!found) {
+  if (found.length === 0) {
     throw new Error(
       `No simulator exactly matches ${JSON.stringify(text)}. Pass an exact UDID or name from sim_devices.`,
     )
   }
-  return found
+  if (found.length > 1) {
+    throw new Error(
+      `Multiple simulators match ${JSON.stringify(text)}: ${found.map((device) => device.udid).join(", ")}. Pass a UDID.`,
+    )
+  }
+  return found[0]!
 }
 
 /** Validate a local .app bundle before handing it to simctl. */

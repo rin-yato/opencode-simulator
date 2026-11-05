@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { baseName, hasInUseMark, inUseName } from "./names"
+import { baseName, inUseName } from "./names"
 
 describe("device names", () => {
   test("adds and strips the in-use mark", () => {
@@ -13,7 +13,5 @@ describe("device names", () => {
 
   test("leaves other names alone", () => {
     expect(baseName("iPhone 17 Pro — storybook")).toBe("iPhone 17 Pro — storybook")
-    expect(hasInUseMark("iPhone 17 Pro 2")).toBe(false)
-    expect(hasInUseMark("iPhone 17 Pro 2 · in use")).toBe(true)
   })
 })

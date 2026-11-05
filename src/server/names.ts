@@ -11,6 +11,3 @@ export const baseName = (name: string): string => name.replace(/\s*·\s*in use\s
 
 /** `<model> N` -> `<model> N · in use`. Idempotent. */
 export const inUseName = (name: string): string => `${baseName(name)}${IN_USE_SUFFIX}`
-
-/** Does this name already carry the ownership marker? */
-export const hasInUseMark = (name: string): boolean => baseName(name) !== name.trim()

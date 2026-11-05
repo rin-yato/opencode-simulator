@@ -118,8 +118,9 @@ A managed device's name follows its claim: while a session holds it the name
 ends with ` · in use`, and the mark is stripped when the claim is released. It
 is cosmetic — matching, numbering, and deletion key on the UDID and the plain
 name stored in `simulator-managed`. Renames are serialized per device, skipped
-when already applied, and reconciled at startup so a crash cannot leave a stale
-mark. External simulators are never renamed.
+when already applied, and reconciled at startup and on every claim change, so a
+mark cannot outlive its claim; a claim left by a crash is cleared by the
+30-second reconcile. External simulators are never renamed.
 
 The panel is the usage signal. The window reports each session's panel state
 (`visible`, `active`, `open`, `closed`) per window over the `panel` RPC method.
