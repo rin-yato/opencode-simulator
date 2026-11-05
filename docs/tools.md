@@ -14,7 +14,7 @@ All tools are in the `sim` namespace. In Code Mode call them as
   pass `udid`; it never falls back to another session's simulator.
 - Auto allocation is managed-only. `sim_start` reuses the session's managed
   device, then the first free managed device of the same model and runtime, then
-  creates `<model> #N`, up to five managed devices per model/runtime. An
+  creates `<model> N`, up to five managed devices per model/runtime. An
   external simulator supplies the model/runtime and app source but is not
   claimed, refreshed, or shut down.
 - A device returns to the pool when its panel closes and the agent session is
@@ -30,7 +30,7 @@ All tools are in the `sim` namespace. In Code Mode call them as
 ### `sim_devices`
 
 List simulators. Booted devices come first. The owner column is always present:
-`self`, `other`, `free`, or `external`.
+`in use (self)`, `in use (other)`, `free`, or `external`.
 
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
@@ -53,7 +53,7 @@ Boot a device without opening the panel.
 | `holdMinutes` | integer 1..1440 | none | Bound the hold; implies `hold` |
 
 The device becomes the session's default and is claimed. Without a udid it uses
-the same managed-pool selection as `sim_start`; it may create `<model> #N`
+the same managed-pool selection as `sim_start`; it may create `<model> N`
 (cold boot). Uses `bootstatus -b`, so it returns after the simulator is ready.
 Without `hold`, the claim is released when the agent session goes idle.
 
@@ -64,7 +64,7 @@ Create a clean managed simulator from a source device's model and runtime.
 | Argument | Type | Default | Meaning |
 |---|---|---|---|
 | `from` | string | session device | Source simulator |
-| `name` | string | `<model> #N` | Name for the new device |
+| `name` | string | `<model> N` | Name for the new device |
 | `app` | string | none | Bundle id to install from the source |
 | `force` | boolean | `false` | Create beyond five managed devices |
 
@@ -113,9 +113,15 @@ requested, and one of:
 
 Without an explicit `udid`, `sim_start` reuses the session's managed device,
 then takes the first free managed device of the same model and runtime, then
-creates `<model> #N`. External simulators are never auto-claimed. An explicit
+creates `<model> N`. External simulators are never auto-claimed. An explicit
 UDID may target an external device or another session (the latter requires
 `share: true`).
+
+A managed device's name follows its claim: while a session holds it the name
+ends with ` · in use`, and the mark is stripped when the claim is released. The
+mark is cosmetic. `udid` still accepts the plain name or the UDID, and
+`sim_devices` reports the owner separately as `in use (self)`, `in use
+(other)`, `free`, or `external`.
 
 When `app` is given and this call assigns a managed device, it is installed or
 refreshed from the reference device or another managed simulator. Installing

@@ -1,6 +1,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { run, runWithInput } from "./exec"
+import { baseName } from "./names"
 
 export interface Device {
   readonly udid: string
@@ -99,7 +100,9 @@ export function matchDevice(devices: readonly Device[], wanted: string): Device 
   const exact = devices.find((device) => device.udid === wanted)
   if (exact) return exact
 
-  const byName = devices.filter((device) => device.name === wanted)
+  const byName = devices.filter(
+    (device) => device.name === wanted || baseName(device.name) === wanted,
+  )
   if (byName.length === 1) return byName[0]!
   if (byName.length > 1) {
     throw new Error(
@@ -236,6 +239,23 @@ export async function createDeviceFrom(
     deviceType: source.deviceType,
     available: true,
   }
+}
+
+/**
+ * Rename a simulator. Metadata only: no disk image is copied, and it works
+ * while the device is booted. The pool uses it to mark a managed device as in
+ * use, so the name is cosmetic and never part of identity.
+ */
+export async function renameDevice(
+  udid: string,
+  name: string,
+  options: CommandOptions = {},
+): Promise<string> {
+  await run("xcrun", ["simctl", "rename", udid, name], {
+    signal: options.signal,
+    timeout: 15_000,
+  })
+  return name
 }
 
 export async function shutdownDevice(

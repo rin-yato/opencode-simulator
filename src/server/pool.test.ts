@@ -22,6 +22,14 @@ describe("deviceModel", () => {
     expect(
       deviceModel(device("My Phone #2", { deviceType: "com.apple.CoreSimulator.SimDeviceType." })),
     ).toBe("My Phone")
+    expect(
+      deviceModel(device("My Phone 2", { deviceType: "com.apple.CoreSimulator.SimDeviceType." })),
+    ).toBe("My Phone")
+    expect(
+      deviceModel(
+        device("My Phone 2 · in use", { deviceType: "com.apple.CoreSimulator.SimDeviceType." }),
+      ),
+    ).toBe("My Phone")
   })
 })
 
@@ -37,23 +45,23 @@ describe("poolDevices", () => {
   test("keeps matching available devices in numeric order", () => {
     const source = device("iPhone 17 Pro")
     const devices = [
-      device("iPhone 17 Pro #10"),
-      device("iPhone 17 Pro #2"),
+      device("iPhone 17 Pro 10"),
+      device("iPhone 17 Pro 2"),
       device("Other", { deviceType: "other" }),
       device("Unavailable", { available: false }),
       device("iPhone 17 Pro"),
     ]
     expect(poolDevices(source, devices).map((entry) => entry.name)).toEqual([
       "iPhone 17 Pro",
-      "iPhone 17 Pro #2",
-      "iPhone 17 Pro #10",
+      "iPhone 17 Pro 2",
+      "iPhone 17 Pro 10",
     ])
   })
 
   test("prefers a booted device over a shut-down one", () => {
     const source = device("iPhone 17 Pro")
-    const devices = [device("iPhone 17 Pro"), device("iPhone 17 Pro #2", { state: "Booted" })]
-    expect(poolDevices(source, devices)[0]!.name).toBe("iPhone 17 Pro #2")
+    const devices = [device("iPhone 17 Pro"), device("iPhone 17 Pro 2", { state: "Booted" })]
+    expect(poolDevices(source, devices)[0]!.name).toBe("iPhone 17 Pro 2")
   })
 
   test("caps the retained pool", () => {
@@ -62,21 +70,27 @@ describe("poolDevices", () => {
 })
 
 describe("poolDeviceName", () => {
-  test("starts at 2 because the source is implicitly 1", () => {
-    expect(poolDeviceName(device("iPhone 17 Pro"), [])).toBe("iPhone 17 Pro #2")
+  test("starts at 1", () => {
+    expect(poolDeviceName(device("iPhone 17 Pro"), [])).toBe("iPhone 17 Pro 1")
   })
 
   test("skips taken numbers", () => {
     expect(
       poolDeviceName(device("iPhone 17 Pro"), [
         device("iPhone 17 Pro"),
-        device("iPhone 17 Pro #2"),
-        device("iPhone 17 Pro #3"),
+        device("iPhone 17 Pro 1"),
+        device("iPhone 17 Pro 2"),
       ]),
-    ).toBe("iPhone 17 Pro #4")
+    ).toBe("iPhone 17 Pro 3")
+  })
+
+  test("counts an in-use device as taken", () => {
+    expect(poolDeviceName(device("iPhone 17 Pro"), [device("iPhone 17 Pro 1 · in use")])).toBe(
+      "iPhone 17 Pro 2",
+    )
   })
 
   test("uses the model even when the source has a custom name", () => {
-    expect(poolDeviceName(device("Melis Order Flow"), [])).toBe("iPhone 17 Pro #2")
+    expect(poolDeviceName(device("Melis Order Flow"), [])).toBe("iPhone 17 Pro 1")
   })
 })

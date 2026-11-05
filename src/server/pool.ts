@@ -1,4 +1,5 @@
 import type { Device } from "./devices"
+import { baseName } from "./names"
 
 /**
  * The pool keeps at most this many simulators per model and runtime. A new
@@ -12,7 +13,13 @@ export const MAX_POOL_SIZE = 5
 export const deviceModel = (device: Device): string => {
   const short = device.deviceType.split(".").pop() ?? ""
   const model = short.replaceAll("-", " ").trim()
-  return model || device.name.replace(/ #\d+$/, "").trim() || "Simulator"
+  return (
+    model ||
+    baseName(device.name)
+      .replace(/(?: #)?\d+$/, "")
+      .trim() ||
+    "Simulator"
+  )
 }
 
 /** Two devices belong to the same pool when model and runtime match. */
@@ -33,14 +40,14 @@ export const poolDevices = (source: Device, devices: readonly Device[]): Device[
     )
 
 /**
- * The smallest free `<model> #N`, starting at 2 because the pool source is
- * implicitly #1. Names are globally unique in `simctl`, so a taken number is
- * skipped even when it belongs to another runtime.
+ * The smallest free `<model> N`, starting at 1. Names are globally unique in
+ * `simctl`, so a taken number is skipped even when it belongs to another
+ * runtime. The pool source keeps its plain model name.
  */
 export const poolDeviceName = (source: Device, devices: readonly Device[]): string => {
   const model = deviceModel(source)
-  const taken = new Set(devices.map((device) => device.name))
-  let index = 2
-  while (taken.has(`${model} #${index}`)) index += 1
-  return `${model} #${index}`
+  const taken = new Set(devices.map((device) => baseName(device.name)))
+  let index = 1
+  while (taken.has(`${model} ${index}`)) index += 1
+  return `${model} ${index}`
 }

@@ -35,8 +35,10 @@ export interface ActivityOptions {
   readonly shutdownDelayMs?: number
   /** Test seam. Defaults to `simctl shutdown`. */
   readonly shutdown?: (device: Device) => Promise<unknown>
-  /** Called after a claim is released; `force` asks the window to clear it. */
+  /** Called after a claim is taken or released; `force` asks the window to clear it. */
   readonly onRelease?: (sessionID: string, udid: string, force: boolean) => void
+  /** Called after a claim changes hands, so a managed device's name can follow it. */
+  readonly onChange?: (udid: string) => void | Promise<void>
   /** Only managed devices are sold back to the pool's shutdown policy. */
   readonly shouldShutdown?: (udid: string) => boolean
 }
@@ -64,6 +66,7 @@ export class Activity {
   readonly #shutdownDelayMs: number
   readonly #shutdownDevice: (device: Device) => Promise<unknown>
   readonly #onRelease: ((sessionID: string, udid: string, force: boolean) => void) | undefined
+  readonly #onChange: ((udid: string) => void | Promise<void>) | undefined
   readonly #shouldShutdown: (udid: string) => boolean
   readonly #panels = new Map<string, PanelEntry>()
   readonly #running = new Set<string>()
@@ -78,6 +81,7 @@ export class Activity {
     this.#shutdownDelayMs = options.shutdownDelayMs ?? DEFAULT_SHUTDOWN_DELAY_MS
     this.#shutdownDevice = options.shutdown ?? ((device) => shutdownDevice(device))
     this.#onRelease = options.onRelease
+    this.#onChange = options.onChange
     this.#shouldShutdown = options.shouldShutdown ?? (() => true)
   }
 
@@ -110,7 +114,7 @@ export class Activity {
     })
     this.#cancelShutdown(udid)
     if (!this.#sessions.pick(update.sessionID)) {
-      await this.#sessions.claim(update.sessionID, udid)
+      if (await this.#sessions.claim(update.sessionID, udid)) await this.#onChange?.(udid)
     }
   }
 
@@ -163,6 +167,7 @@ export class Activity {
     const targets = new Set<string>([udid])
     if (panelDevice) targets.add(panelDevice)
     for (const target of targets) {
+      await this.#onChange?.(target)
       this.#onRelease?.(sessionID, target, true)
       await this.#maybeShutdown(target)
     }
@@ -271,6 +276,7 @@ export class Activity {
     }
     const udid = await this.#sessions.forgetSession(sessionID)
     if (!udid) return
+    await this.#onChange?.(udid)
     this.#onRelease?.(sessionID, udid, false)
     await this.#maybeShutdown(udid)
   }

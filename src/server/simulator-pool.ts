@@ -1,6 +1,7 @@
 import { Activity, type PanelState, type PanelUpdate, type ReleaseState } from "./activity"
-import type { Device } from "./devices"
+import { listDevices, renameDevice, type Device } from "./devices"
 import type { ManagedDevice, ManagedDevices } from "./managed"
+import { inUseName } from "./names"
 import type { SessionDevices } from "./session-devices"
 
 export interface SimulatorPoolOptions {
@@ -8,6 +9,8 @@ export interface SimulatorPoolOptions {
   readonly managed: ManagedDevices
   readonly onRelease?: (sessionID: string, udid: string, force: boolean) => void
   readonly shutdownDelayMs?: number
+  /** Test seam. Defaults to `simctl rename`. */
+  readonly rename?: (udid: string, name: string) => Promise<unknown>
 }
 
 /**
@@ -21,15 +24,22 @@ export class SimulatorPool {
   readonly sessions: SessionDevices
   readonly managed: ManagedDevices
   readonly activity: Activity
+  readonly #renameDevice: (udid: string, name: string) => Promise<unknown>
+  /** Name this process last applied, so a redundant rename is skipped. */
+  readonly #applied = new Map<string, string>()
+  /** One rename at a time per device; claim and release can race. */
+  readonly #renames = new Map<string, Promise<void>>()
 
   constructor(options: SimulatorPoolOptions) {
     this.sessions = options.sessions
     this.managed = options.managed
+    this.#renameDevice = options.rename ?? ((udid, name) => renameDevice(udid, name))
     this.activity = new Activity({
       sessions: options.sessions,
       onRelease: options.onRelease,
       shutdownDelayMs: options.shutdownDelayMs,
       shouldShutdown: (udid) => options.managed.has(udid),
+      onChange: (udid) => this.syncName(udid),
     })
   }
 
@@ -57,10 +67,66 @@ export class SimulatorPool {
     return this.managed.entries()
   }
 
+  /**
+   * Reflect ownership in the device's name: `<model> N · in use` while a
+   * session holds it, the plain name otherwise. Only managed devices are
+   * renamed, and the name stays cosmetic — the pool still keys on the UDID.
+   */
+  async syncName(udid: string): Promise<void> {
+    const base = this.managed.get(udid)?.name
+    if (!base) return
+    const busy = this.owners(udid).length > 0 || this.isBusy(udid)
+    await this.#rename(udid, busy ? inUseName(base) : base)
+  }
+
+  /** Repair names after a restart: a mark that outlived its claim is stripped. */
+  async reconcileNames(): Promise<void> {
+    let devices: readonly Device[]
+    try {
+      devices = await listDevices()
+    } catch (cause) {
+      console.warn("opencode-simulator: could not reconcile simulator names", cause)
+      return
+    }
+    for (const device of devices) {
+      const base = this.managed.get(device.udid)?.name
+      if (!base) continue
+      const busy = this.owners(device.udid).length > 0 || this.isBusy(device.udid)
+      const wanted = busy ? inUseName(base) : base
+      if (device.name === wanted) {
+        this.#applied.set(device.udid, wanted)
+        continue
+      }
+      await this.#rename(device.udid, wanted)
+    }
+  }
+
+  #rename(udid: string, name: string): Promise<void> {
+    const previous = this.#renames.get(udid) ?? Promise.resolve()
+    const next = previous
+      .catch(() => {})
+      .then(async () => {
+        if (this.#applied.get(udid) === name) return
+        await this.#renameDevice(udid, name)
+        this.#applied.set(udid, name)
+      })
+      .catch((cause) => {
+        console.warn("opencode-simulator: could not rename a simulator", cause)
+      })
+    this.#renames.set(udid, next)
+    void next.then(() => {
+      if (this.#renames.get(udid) === next) this.#renames.delete(udid)
+    })
+    return next
+  }
+
   /** Claim a device exclusively and mark it recently used. */
   async claim(sessionID: string, udid: string): Promise<boolean> {
     const claimed = await this.sessions.claim(sessionID, udid)
-    if (claimed) this.activity.use(udid)
+    if (claimed) {
+      this.activity.use(udid)
+      await this.syncName(udid)
+    }
     return claimed
   }
 
@@ -68,6 +134,7 @@ export class SimulatorPool {
   async remember(sessionID: string, udid: string): Promise<void> {
     await this.sessions.remember(sessionID, udid)
     this.activity.use(udid)
+    await this.syncName(udid)
   }
 
   async manage(device: Device): Promise<void> {
@@ -95,6 +162,7 @@ export class SimulatorPool {
     for (const sessionID of owners) await this.activity.close(sessionID)
     this.activity.forget(udid)
     await this.managed.forget(udid)
+    this.#applied.delete(udid)
     return owners
   }
 

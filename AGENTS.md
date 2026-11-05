@@ -35,6 +35,9 @@ run `bun run build` after GUI changes.
   `sim_start` allocates a free managed pool device by default. External devices
   are reference/source only; never auto-claim, auto-refresh, or auto-shut them
   down. Use `sim_create` for an explicitly named managed device.
+- A managed device's name follows its claim (`iPhone 17 Pro 2 · in use`) and is
+  cosmetic: match on the UDID or the plain name in `simulator-managed`, never on
+  the marked name. External devices are never renamed.
 - Spawn with argument arrays (`execFile`/`spawn`), never shell strings.
 - Keep state bounded: session maps cap at 500 entries, managed devices at 200
   with five per model/runtime, screenshots at 24 hours and 200 files.

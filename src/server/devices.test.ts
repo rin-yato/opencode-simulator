@@ -13,13 +13,13 @@ const device = (name: string, udid: string): Device => ({
 
 const devices = [
   device("iPhone 17 Pro", "udid-17-pro"),
-  device("iPhone 17 Pro #2", "udid-17-pro-2"),
+  device("iPhone 17 Pro 2", "udid-17-pro-2"),
   device("iPhone 17e", "udid-17e"),
 ]
 
 describe("matchDevice", () => {
   test("matches a UDID exactly", () => {
-    expect(matchDevice(devices, "udid-17-pro-2").name).toBe("iPhone 17 Pro #2")
+    expect(matchDevice(devices, "udid-17-pro-2").name).toBe("iPhone 17 Pro 2")
   })
 
   test("matches an exact name before trying fragments", () => {
@@ -28,6 +28,11 @@ describe("matchDevice", () => {
 
   test("matches a unique name fragment", () => {
     expect(matchDevice(devices, "17e").udid).toBe("udid-17e")
+  })
+
+  test("matches a marked device by its plain name", () => {
+    const marked = [device("iPhone 17 Pro 2 · in use", "udid-17-pro-2")]
+    expect(matchDevice(marked, "iPhone 17 Pro 2").udid).toBe("udid-17-pro-2")
   })
 
   test("refuses an ambiguous fragment instead of guessing", () => {

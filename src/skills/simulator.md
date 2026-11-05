@@ -23,7 +23,8 @@ Tool names below are the agent-facing aliases. In Code Mode they are
 ## Start
 
 1. `sim_devices` — list simulators with state, runtime, UDID, and owner
-   (`self`, `other`, `free`, `external`). Add `{ disk: true }` for sizes.
+   (`in use (self)`, `in use (other)`, `free`, `external`). Add `{ disk: true }`
+   for sizes.
 2. `sim_start({ udid?, app?, share?, hold?, holdMinutes? })` — boot a **managed**
    device, launch the
    app by bundle id, and open the Simulator panel **in the calling session**. It
@@ -40,8 +41,8 @@ this session started. If the device was returned to the pool, the tool tells you
 to run `sim_start` or pass `udid`; it never falls back to another session's
 simulator. Without a `udid`, `sim_start` reuses the session's managed device,
 then takes the first free managed device of the same model and runtime, then
-creates `<model> #N`. External simulators are never auto-claimed; the first call
-creates `#2` from your installed device. Pass `udid` to use an external device.
+creates `<model> N`. External simulators are never auto-claimed; the first call
+creates `1` from your installed device. Pass `udid` to use an external device.
 Pass `share: true` with a UDID another session owns; without it the tool
 refuses.
 
@@ -51,6 +52,10 @@ seconds. The pool keeps up to five managed devices per model/runtime. When more
 than one model/runtime is installed and none is booted, pass `udid` so the pool
 knows which one to use.
 
+While a session holds a managed device its name ends with ` · in use`; the mark
+is removed when the claim is released. It is cosmetic: pass the plain name or
+the UDID to `udid`, never the marked one.
+
 ## Parallel devices
 
 A simulator is one UDID. Two sessions targeting the same UDID share one screen,
@@ -58,12 +63,12 @@ one app state, and one set of taps: they will fight. `sim_start` prevents that
 by default:
 
 ```
-sim_start({ app: "com.example.app" })   # creates iPhone 17 Pro #2
-sim_start({ app: "com.example.app" })   # creates #3, or reuses a free managed one
+sim_start({ app: "com.example.app" })   # creates iPhone 17 Pro 1
+sim_start({ app: "com.example.app" })   # creates iPhone 17 Pro 2, or reuses a free managed one
 ```
 
-The first session creates a managed `#2` from your installed device. The second
-creates `#3`, or reuses a free managed device. When `app` is given and
+The first session creates a managed `1` from your installed device. The second
+creates `2`, or reuses a free managed device. When `app` is given and
 `sim_start` assigns a managed device, it is installed or refreshed from the
 reference device or another managed simulator when possible; existing app data
 is kept, and data is not copied from the source. Reusing the session's own or an
