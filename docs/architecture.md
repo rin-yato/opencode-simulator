@@ -119,7 +119,7 @@ ends with ` · in use`, and the mark is stripped when the claim is released. It
 is cosmetic — matching, numbering, and deletion key on the UDID and the plain
 name stored in `simulator-managed`. Renames are serialized per device, skipped
 when already applied, and reconciled at startup and on every claim change, so a
-mark cannot outlive its claim; a claim left by a crash is cleared by the
+mark normally clears with its claim; a claim left by a crash is cleared by the
 30-second reconcile. External simulators are never renamed.
 
 The panel is the usage signal. The window reports each session's panel state
