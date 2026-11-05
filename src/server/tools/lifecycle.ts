@@ -17,6 +17,7 @@ import {
   type Device,
 } from "../devices"
 import { launchApp } from "../actions"
+import { baseName } from "../names"
 import { MAX_POOL_SIZE, deviceModel, poolDeviceName, poolDevices } from "../pool"
 import { serveSimPort } from "../serve-sim"
 import {
@@ -301,7 +302,10 @@ const resolveExactDevice = async (wanted: string): Promise<Device> => {
   const devices = await listDevices()
   const needle = text.toLowerCase()
   const found = devices.find(
-    (device) => device.udid.toLowerCase() === needle || device.name === text,
+    (device) =>
+      device.udid.toLowerCase() === needle ||
+      device.name === text ||
+      baseName(device.name) === text,
   )
   if (!found) {
     throw new Error(
@@ -334,7 +338,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
   editor.add({
     name: "devices",
     description:
-      "List simulators with state, runtime, UDID, and an owner label. `self` is this session's device, `free` is a managed pool device nobody uses, `other` is another session, and `external` is a simulator the plugin did not create. Pass disk to add on-disk sizes (slower).",
+      "List simulators with state, runtime, UDID, and an owner label. `in use (self)` is this session's device, `in use (other)` is another session, `free` is a managed pool device nobody uses, and `external` is a simulator the plugin did not create. A managed device's name also ends with ` · in use` while it is claimed. Pass disk to add on-disk sizes (slower).",
     input: {
       type: "object",
       properties: {
@@ -388,9 +392,9 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
         const owner = !managed
           ? "external"
           : owners.includes(context.sessionID) || selfPanel
-            ? "self"
+            ? "in use (self)"
             : inUse
-              ? "other"
+              ? "in use (other)"
               : "free"
         const size = input.disk ? formatSize(sizes[index]) : undefined
         const row = `${device.name}\t${device.state}\t${device.runtime}\t${device.udid}`
@@ -413,7 +417,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
   editor.add({
     name: "boot",
     description:
-      "Boot a simulator by UDID or name, without opening Simulator.app. Without a udid it reuses this session's device, then takes a free managed pool device; it may create <model> #N (cold boot). The claim is released at turn end unless hold is true. Use sim_start to also open the panel.",
+      "Boot a simulator by UDID or name, without opening Simulator.app. Without a udid it reuses this session's device, then takes a free managed pool device; it may create <model> N (cold boot). The claim is released at turn end unless hold is true. Use sim_start to also open the panel.",
     input: {
       type: "object",
       properties: {
@@ -477,7 +481,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
         },
         name: {
           type: "string",
-          description: "Name for the new simulator. Defaults to '<model> #N', made unique.",
+          description: "Name for the new simulator. Defaults to '<model> N', made unique.",
         },
         app: {
           type: "string",
@@ -502,8 +506,8 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
           `The ${deviceModel(source)} pool already has ${MAX_POOL_SIZE} managed devices. Pass force: true to create another.`,
         )
       }
-      const name = input.name?.trim() || poolDeviceName(source, devices)
-      if (devices.some((device) => device.name === name)) {
+      const name = baseName(input.name?.trim() || poolDeviceName(source, devices))
+      if (devices.some((device) => baseName(device.name) === name)) {
         throw new Error(`A simulator named "${name}" already exists. Pass another name.`)
       }
 
@@ -601,7 +605,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
   editor.add({
     name: "start",
     description:
-      "Start the simulator end to end: boot the device if needed, optionally launch an app, and open the Simulator panel in the session that called this tool. Omitting udid reuses this session's device, then the first free managed device of the same model and runtime; when none is free, it creates <model> #N (up to five managed devices). External simulators are never claimed automatically.",
+      "Start the simulator end to end: boot the device if needed, optionally launch an app, and open the Simulator panel in the session that called this tool. Omitting udid reuses this session's device, then the first free managed device of the same model and runtime; when none is free, it creates <model> N (up to five managed devices). External simulators are never claimed automatically.",
     input: {
       type: "object",
       properties: {

@@ -103,7 +103,7 @@ simulator. Without a udid it:
 
 1. reuses the managed device this session already started, even when shut down;
 2. takes the first free managed device of the same model and runtime;
-3. creates `<model> #N` from an external/reference device when none is free;
+3. creates `<model> N` from an external/reference device when none is free;
 4. refuses to grow past five managed devices per model/runtime.
 
 The pool is managed-only. `ManagedDevices` stores the devices the plugin
@@ -113,6 +113,13 @@ through an explicit `udid`. A managed device is free when no session owns it, no
 panel shows it, no lease holds it, and no running session uses it. Devices are
 never auto-deleted; `sim_delete` requires an exact name/UDID and forgets the
 claim, managed record, panels, and hub.
+
+A managed device's name follows its claim: while a session holds it the name
+ends with ` · in use`, and the mark is stripped when the claim is released. It
+is cosmetic — matching, numbering, and deletion key on the UDID and the plain
+name stored in `simulator-managed`. Renames are serialized per device, skipped
+when already applied, and reconciled at startup so a crash cannot leave a stale
+mark. External simulators are never renamed.
 
 The panel is the usage signal. The window reports each session's panel state
 (`visible`, `active`, `open`, `closed`) per window over the `panel` RPC method.
@@ -229,9 +236,10 @@ does not use `process.execPath`, `ELECTRON_RUN_AS_NODE`, or `npx`.
 | `src/server/tools/input.ts` | `tap`, `scroll`, `type`, `button`, `rotate` |
 | `src/server/tools/settings.ts` | `settings`, `keyboard`, `statusbar` |
 | `src/server/devices.ts` | `simctl` list, match, boot, create, shutdown, delete, app install |
-| `src/server/pool.ts` | Pool selection, model matching, `<model> #N` names |
+| `src/server/pool.ts` | Pool selection, model matching, `<model> N` names |
 | `src/server/simulator-pool.ts` | Single owner of claims, hooks, managed records, activity |
 | `src/server/managed.ts` | Devices the plugin created; external devices are excluded |
+| `src/server/names.ts` | Cosmetic ` · in use` mark on claimed managed devices |
 | `src/server/activity.ts` | Panel leases, holds, running sessions, release, shutdown |
 | `src/node-path.ts` | System Node resolution for Finder-launched apps |
 | `src/server/accessibility.ts` | AX tree parsing and compaction |

@@ -71,9 +71,10 @@ sim_start({ app: "com.example.app" })
 ```
 
 The plugin creates or reuses a managed pool device. Your existing simulators are
-not claimed automatically: the first call creates `<model> #2` and uses the
+not claimed automatically: the first call creates `<model> 1` and uses the
 installed device only as the model/runtime and app source. The panel opens in
-the calling session, on that exact device.
+the calling session, on that exact device. While a device is held, its name ends
+with ` · in use`; the mark is removed when it returns to the pool.
 
 Install a fresh build you already produced:
 
@@ -101,12 +102,12 @@ A simulator is a UDID. Two sessions on the same UDID share one screen, app
 state, and set of taps. `sim_start` gives each session its own managed device:
 
 ```text
-sim_start({ app: "com.example.app" })   # iPhone 17 Pro #2
-sim_start({ app: "com.example.app" })   # #3, or a free managed device
+sim_start({ app: "com.example.app" })   # iPhone 17 Pro 1
+sim_start({ app: "com.example.app" })   # iPhone 17 Pro 2, or a free managed device
 ```
 
-The first session creates `#2` from your installed iPhone 17 Pro. The second
-creates `#3`, or reuses a free managed device. The pool keeps up to five managed
+The first session creates `1` from your installed iPhone 17 Pro. The second
+creates `2`, or reuses a free managed device. The pool keeps up to five managed
 devices per model and runtime. The first time a device is created it pays the
 cold boot (minutes); after that it stays in the pool and later sessions reuse
 it. The panel opens immediately and shows its loader during the boot. Reused
@@ -135,7 +136,7 @@ sim_start({ udid: "iPhone 17 Pro" })
 Drive a simulator another session owns only with `share: true`:
 
 ```text
-sim_start({ udid: "iPhone 17 Pro #2", share: true })
+sim_start({ udid: "iPhone 17 Pro 1", share: true })
 ```
 
 To create an explicitly named managed device, use `sim_create` first:
@@ -150,7 +151,7 @@ it (exact name or UDID; external/panel-owned devices need `force`):
 
 ```text
 sim_devices({ disk: true })
-sim_delete({ udid: "iPhone 17 Pro #2" })
+sim_delete({ udid: "iPhone 17 Pro 1" })
 ```
 
 ## Tools

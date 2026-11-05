@@ -18,13 +18,17 @@ const setup = (entries: Record<string, string> = {}) => {
   const sessions = new SessionDevices(entries)
   const managed = new ManagedDevices()
   const released: Array<{ sessionID: string; udid: string; force: boolean }> = []
+  const renames: Array<{ udid: string; name: string }> = []
   const pool = new SimulatorPool({
     sessions,
     managed,
     shutdownDelayMs: 0,
     onRelease: (sessionID, udid, force) => released.push({ sessionID, udid, force }),
+    rename: async (udid, name) => {
+      renames.push({ udid, name })
+    },
   })
-  return { sessions, managed, pool, released }
+  return { sessions, managed, pool, released, renames }
 }
 
 describe("SimulatorPool", () => {
@@ -73,5 +77,29 @@ describe("SimulatorPool", () => {
     const { sessions, pool } = setup({ ses_1: "udid-1" })
     expect(await pool.releaseManual("ses_1", "udid-2")).toBeUndefined()
     expect(sessions.pick("ses_1")).toBe("udid-1")
+  })
+
+  test("marks a managed device in use and clears the mark on release", async () => {
+    const { pool, renames } = setup()
+    await pool.manage(device("udid-1"))
+    await pool.claim("ses_1", "udid-1")
+    expect(renames.at(-1)).toEqual({ udid: "udid-1", name: "udid-1 · in use" })
+    await pool.releaseManual("ses_1")
+    expect(renames.at(-1)).toEqual({ udid: "udid-1", name: "udid-1" })
+  })
+
+  test("keeps the mark while another session still shares the device", async () => {
+    const { pool, renames } = setup()
+    await pool.manage(device("udid-1"))
+    await pool.claim("ses_1", "udid-1")
+    await pool.remember("ses_2", "udid-1")
+    await pool.releaseManual("ses_1")
+    expect(renames.at(-1)).toEqual({ udid: "udid-1", name: "udid-1 · in use" })
+  })
+
+  test("never renames an external device", async () => {
+    const { pool, renames } = setup()
+    expect(await pool.claim("ses_1", "udid-external")).toBe(true)
+    expect(renames).toEqual([])
   })
 })

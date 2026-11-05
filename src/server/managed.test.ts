@@ -16,7 +16,7 @@ const fakeStorage = (initial?: unknown) => {
 
 const device = (index: number): ManagedDevice => ({
   udid: `udid-${index}`,
-  name: `iPhone 17 Pro #${index}`,
+  name: `iPhone 17 Pro ${index}`,
   deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
   runtimeId: "com.apple.CoreSimulator.SimRuntime.iOS-26-5",
   createdAt: index,
@@ -31,7 +31,7 @@ describe("ManagedDevices", () => {
     })
     const managed = await ManagedDevices.load(storage)
     expect(managed.size).toBe(1)
-    expect(managed.get("udid-1")?.name).toBe("iPhone 17 Pro #1")
+    expect(managed.get("udid-1")?.name).toBe("iPhone 17 Pro 1")
   })
 
   test("remembers and forgets a device", async () => {

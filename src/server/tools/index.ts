@@ -159,6 +159,7 @@ export async function registerTools(
 
   void cleanServeSimState().catch(() => {})
   await syncRunning(ctx, pool, false)
+  void pool.reconcileNames().catch(() => {})
   watchActivity(ctx, pool, abort.signal)
 
   await ctx.tool.transform((editor) => {
