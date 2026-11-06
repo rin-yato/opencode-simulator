@@ -77,23 +77,33 @@ export default Plugin.define({
     })()
     let stopped = false
 
+    /**
+     * Devices an open request named for a session that was not in an open
+     * tab yet. The session can show up a moment later, and the panel should
+     * still open on the device the agent asked for.
+     */
+    const pending = new Map<string, string>()
+
     const handleOpen = (event: {
       data?: { request?: unknown; sessionID?: unknown; udid?: unknown }
     }) => {
       const request = typeof event.data?.request === "string" ? event.data.request : ""
       if (!request) return
       const sessionID = typeof event.data?.sessionID === "string" ? event.data.sessionID : ""
+      const udid = typeof event.data?.udid === "string" ? event.data.udid : ""
       // Only the window that owns the calling session's tab may open the panel.
       // Never fall back to whichever session happens to be focused: the user may
       // have moved to another session while the tool was running.
       const session = ctx.sessions.list().find((candidate) => candidate.id === sessionID)
       if (!session) {
+        // The session has no tab yet. Keep the device and open the panel when
+        // the session shows up instead of dropping the request.
+        if (udid) pending.set(sessionID, udid)
         void client()
           .opened({ request, opened: false })
           .catch(() => {})
         return
       }
-      const udid = typeof event.data?.udid === "string" ? event.data.udid : ""
       // Record the device before mounting the tab: the panel reads it on mount
       // and asks the main process for a hub locked to that simulator.
       if (udid) requestDevice(session.key, udid)
@@ -138,6 +148,14 @@ export default Plugin.define({
       const open = new Set<string>()
       for (const session of sessions) {
         open.add(session.id)
+        // A session that asked for a simulator before it had a tab gets its
+        // panel now, on the device the agent named.
+        const waiting = pending.get(session.id)
+        if (waiting) {
+          pending.delete(session.id)
+          requestDevice(session.key, waiting)
+          ctx.layout.open(`${ctx.id}:device`, session, { background: true })
+        }
         // A moved or reconnecting session has no location yet, and the layout
         // reports every tab as closed. Keep the last known state until it loads.
         if (!session.location) continue

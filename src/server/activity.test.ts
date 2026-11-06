@@ -66,11 +66,19 @@ describe("Activity", () => {
     expect(activity.isBusy("udid-panel", "ses_2")).toBe(true)
   })
 
-  test("an open panel with no device does not hold the session's claim", async () => {
+  test("an open panel without a device holds the session's claim", async () => {
     const { sessions, activity } = setup({ ses_1: "udid-1" })
     await activity.panel({ sessionID: "ses_1", state: "visible" })
-    expect(activity.panelState("ses_1")).toBe("closed")
+    expect(activity.panelState("ses_1")).toBe("visible")
+    expect(activity.panelDevice("ses_1")).toBe("udid-1")
     expect(sessions.pick("ses_1")).toBe("udid-1")
+  })
+
+  test("an open panel without a device claims nothing when the session has none", async () => {
+    const { sessions, activity } = setup()
+    await activity.panel({ sessionID: "ses_1", state: "visible" })
+    expect(activity.panelState("ses_1")).toBe("closed")
+    expect(sessions.pick("ses_1")).toBeUndefined()
   })
 
   test("a running session marks its device busy for other sessions", () => {

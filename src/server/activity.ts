@@ -101,7 +101,11 @@ export class Activity {
       return
     }
 
-    const udid = update.udid?.trim()
+    // A window that does not know the device yet reports the panel without
+    // one. The session's own claim is the device that panel shows, and using
+    // it keeps the claim alive: a released claim would leave the panel
+    // pointing at a simulator nobody owns.
+    const udid = update.udid?.trim() || this.#sessions.pick(update.sessionID)
     if (!udid || this.#deleted.has(udid)) return
 
     const ttl = update.ttlMs && update.ttlMs > 0 ? update.ttlMs : DEFAULT_PANEL_TTL_MS

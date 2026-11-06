@@ -177,7 +177,10 @@ export async function registerTools(
 
   return {
     panel: (update) => pool.panel(update),
-    device: (sessionID) => pool.pick(sessionID),
+    // The panel's device counts as the session's device: the window reports
+    // what it shows, and the server re-takes the claim from that report. A
+    // panel that is still open must not look like a session without one.
+    device: (sessionID) => pool.pick(sessionID) ?? pool.panelDevice(sessionID),
     dispose: () => {
       abort.abort()
       clearInterval(sweep)
