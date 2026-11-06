@@ -248,12 +248,6 @@ More detail: [docs/architecture.md](https://unpkg.com/opencode-simulator/docs/ar
 - `sim_delete` requires an exact name or UDID. External and panel-owned devices
   need `force: true`; deletion is destructive and removes all data.
 
-## Security
-
-Report vulnerabilities privately through the
-[security policy](https://unpkg.com/opencode-simulator/SECURITY.md).
-Do not open a public issue for a vulnerability.
-
 ## License
 
 MIT
