@@ -19,10 +19,33 @@ session scoping, or the hub.
 ```sh
 bun install
 bun run check     # typecheck + unit tests
+bun audit         # exits 1 for the known moderates below
 bun run build     # dist/gui-experimental.cjs
+bun run changeset # add a release changeset
 bun run dev       # GUI watch mode
 bun run format
 ```
+
+Publishing is automatic. Every push to `main` runs
+`.github/workflows/release.yml`, which consumes pending changesets (or creates a
+patch changeset when there are none), bumps the version, commits
+`chore(release): vX.Y.Z`, and publishes to npm. Add `bun run changeset` output to
+a PR to choose a minor or major bump. Retry a failed release with
+`gh workflow run release.yml`.
+
+The workflow uses npm trusted publishing (OIDC), so there is no npm token or
+repository secret. The trusted publisher on npmjs.com must name this repository
+and `release.yml`, and must allow `npm publish`. Renaming the workflow breaks
+publishing until that configuration is replaced. Provenance is not generated
+while the repository is private. Test the versioning in a throwaway clone with
+`DRY_RUN=true bash scripts/release.sh`; it leaves the version bump in that
+clone's working tree.
+
+`bun audit` reports two moderate advisories through `@opencode/plugin`'s pinned
+`glob` and `minimatch`. They are tooling dependencies, not part of the GUI bundle;
+do not force major overrides without checking the OpenCode SDK. The automated
+release commits to `main`, so keep that branch unprotected or replace the script
+with a version-PR flow before enabling branch protection.
 
 The server part loads from `src/`. The GUI is bundled. `dist/` is not committed;
 run `bun run build` after GUI changes.
