@@ -11,6 +11,7 @@ import { run } from "../exec"
 import { serveSimPort } from "../serve-sim"
 import { screenshot } from "../screenshot"
 import {
+  bootedDevice,
   currentDevice,
   define,
   ok,
@@ -142,7 +143,7 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
     },
     options: SIM_OPTIONS,
     execute: define(async (input: UiInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid, input.share)
+      const device = await bootedDevice(simulator, context, input.udid, input.share)
       const snapshot = await readSnapshot(device.udid, {
         includeAll: input.mode === "all",
         signal: context.signal,
@@ -178,7 +179,7 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
     },
     options: SIM_OPTIONS,
     execute: define(async (input: WaitInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid, input.share)
+      const device = await bootedDevice(simulator, context, input.udid, input.share)
       const started = Date.now()
       const timeout = (input.timeout ?? 5) * 1_000
       const interval = (input.interval ?? 0.3) * 1_000
@@ -222,7 +223,7 @@ export function registerInspectionTools(editor: ToolEditor, simulator: Simulator
     },
     options: SIM_OPTIONS,
     execute: define(async (input: ScreenshotInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid, input.share)
+      const device = await bootedDevice(simulator, context, input.udid, input.share)
       const result = await screenshot(device.udid, {
         signal: context.signal,
         width: input.width ?? 800,

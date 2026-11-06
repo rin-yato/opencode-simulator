@@ -1,3 +1,4 @@
+import { readdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { run, runWithInput } from "./exec"
@@ -100,6 +101,8 @@ export function matchDevice(devices: readonly Device[], wanted: string): Device 
   const exact = devices.find((device) => device.udid === wanted)
   if (exact) return exact
 
+  // A stale device from a removed runtime must not make a name ambiguous.
+  devices = devices.filter((device) => device.available)
   const byName = devices.filter(
     (device) => device.name === wanted || baseName(device.name) === wanted,
   )
@@ -127,57 +130,31 @@ export function matchDevice(devices: readonly Device[], wanted: string): Device 
   )
 }
 
-/** Resolve a device for an inspection or input tool. It must already be booted. */
+/** Resolve a device by UDID, exact name, or unique fragment. */
 export async function resolveDevice(
-  requested?: string,
+  requested: string,
   options: CommandOptions = {},
 ): Promise<Device> {
-  const devices = await listDevices(options)
-  const wanted = requested?.trim()
-  if (wanted) return matchDevice(devices, wanted)
-
-  const booted = devices.filter((device) => device.state === "Booted")
-  if (booted.length === 1) return booted[0]!
-  if (booted.length === 0) {
-    throw new Error("No simulator is booted. Boot one with sim_start or sim_boot.")
-  }
-  throw new Error(
-    `Multiple simulators are booted: ${booted.map(describe).join(", ")}. Pass a udid to choose one.`,
-  )
+  return matchDevice(await listDevices(options), requested.trim())
 }
 
-/**
- * Resolve a device for a start/boot request. Unlike `resolveDevice`, this may
- * return a shut-down device so the caller can boot it. Prefers an explicit
- * name/UDID, then the only booted device, then the only installed device.
- */
-export async function resolveStartDevice(
-  requested?: string,
-  options: CommandOptions = {},
-): Promise<Device> {
-  const devices = await listDevices(options)
-  const wanted = requested?.trim()
-  if (wanted) return matchDevice(devices, wanted)
-
-  const booted = devices.filter((device) => device.state === "Booted")
-  if (booted.length === 1) return booted[0]!
-  if (booted.length > 1) {
-    throw new Error(
-      `Multiple simulators are booted: ${booted.map(describe).join(", ")}. Pass a udid to choose one.`,
-    )
-  }
-
-  const available = devices.filter((device) => device.available)
-  if (available.length === 1) return available[0]!
-  throw new Error(
-    `No simulator is booted. Pass a udid or name. Available: ${
-      available.map(describe).join(", ") || "none"
-    }.`,
-  )
-}
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export async function bootDevice(device: Device, options: CommandOptions = {}): Promise<string> {
-  if (device.state === "Booted") return `already booted ${device.name} (${device.udid})`
+  // The pool's shutdown can land between listing and booting, so the state
+  // the caller holds may be stale.
+  const stateOf = async (): Promise<string> => {
+    const fresh = await listDevices(options).catch(() => undefined)
+    return fresh?.find((candidate) => candidate.udid === device.udid)?.state ?? device.state
+  }
+  let state = await stateOf()
+  for (const deadline = Date.now() + 30_000; state === "Shutting Down";) {
+    if (Date.now() >= deadline) break
+    await sleep(500)
+    options.signal?.throwIfAborted()
+    state = await stateOf()
+  }
+  if (state === "Booted") return `already booted ${device.name} (${device.udid})`
 
   try {
     await run("xcrun", ["simctl", "boot", device.udid], {
@@ -343,6 +320,68 @@ export async function eraseDevice(device: Device, options: CommandOptions = {}):
   return `erased ${device.name} (${device.udid})`
 }
 
+/** Is the app installed on a booted simulator? */
+export async function hasApp(
+  udid: string,
+  bundleId: string,
+  options: CommandOptions = {},
+): Promise<boolean> {
+  try {
+    await run("xcrun", ["simctl", "get_app_container", udid, bundleId, "app"], {
+      signal: options.signal,
+      timeout: 15_000,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Find an installed `.app` by reading the device's bundle directory. Works
+ * while the device is shut down, which `simctl get_app_container` does not.
+ */
+export async function findAppBundle(
+  udid: string,
+  bundleId: string,
+  options: CommandOptions = {},
+): Promise<string | undefined> {
+  const root = join(
+    homedir(),
+    "Library",
+    "Developer",
+    "CoreSimulator",
+    "Devices",
+    udid,
+    "data",
+    "Containers",
+    "Bundle",
+    "Application",
+  )
+  const list = (path: string): string[] => {
+    try {
+      return readdirSync(path)
+    } catch {
+      return []
+    }
+  }
+  for (const container of list(root)) {
+    for (const entry of list(join(root, container))) {
+      if (!entry.endsWith(".app")) continue
+      const app = join(root, container, entry)
+      try {
+        const { stdout } = await run(
+          "plutil",
+          ["-extract", "CFBundleIdentifier", "raw", "-o", "-", join(app, "Info.plist")],
+          { signal: options.signal, timeout: 15_000 },
+        )
+        if (stdout.trim() === bundleId) return app
+      } catch {}
+    }
+  }
+  return undefined
+}
+
 export async function installAppFrom(
   target: string,
   source: string,
@@ -352,8 +391,9 @@ export async function installAppFrom(
   const container = await run("xcrun", ["simctl", "get_app_container", source, bundleId, "app"], {
     signal: options.signal,
     timeout: 15_000,
-  })
-  const path = container.stdout.trim()
+  }).catch(() => undefined)
+  // `get_app_container` refuses a shut-down source; read its bundles from disk.
+  const path = container?.stdout.trim() || (await findAppBundle(source, bundleId, options))
   if (!path) throw new Error(`No installed app ${bundleId} on the source simulator.`)
   // A reused pool device may still have the old build running.
   try {

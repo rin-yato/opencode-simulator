@@ -14,7 +14,10 @@ const device = (udid: string): Device => ({
   available: true,
 })
 
-const setup = (entries: Record<string, string> = {}) => {
+const setup = (
+  entries: Record<string, string> = {},
+  extra: Partial<ConstructorParameters<typeof SimulatorPool>[0]> = {},
+) => {
   const sessions = new SessionDevices(entries)
   const managed = new ManagedDevices()
   const released: Array<{ sessionID: string; udid: string; force: boolean }> = []
@@ -27,9 +30,12 @@ const setup = (entries: Record<string, string> = {}) => {
     rename: async (udid, name) => {
       renames.push({ udid, name })
     },
+    ...extra,
   })
   return { sessions, managed, pool, released, renames }
 }
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 describe("SimulatorPool", () => {
   test("claims and releases a managed device", async () => {
@@ -97,9 +103,194 @@ describe("SimulatorPool", () => {
     expect(renames.at(-1)).toEqual({ udid: "udid-1", name: "udid-1 · in use" })
   })
 
+  test("switching devices unmarks and schedules shutdown of the old one", async () => {
+    const shut: string[] = []
+    const { sessions, pool, renames, released } = setup(
+      {},
+      {
+        shutdownDelayMs: 5,
+        list: async () => [device("udid-1"), device("udid-2")],
+        shutdown: async (d) => {
+          shut.push(d.udid)
+        },
+      },
+    )
+    await pool.manage(device("udid-1"))
+    await pool.manage(device("udid-2"))
+    await pool.claim("ses_1", "udid-1")
+    await pool.panel({ sessionID: "ses_1", udid: "udid-1", state: "open", window: "w" })
+    await pool.claim("ses_1", "udid-2")
+    expect(sessions.pick("ses_1")).toBe("udid-2")
+    expect(renames.filter((r) => r.udid === "udid-1").at(-1)?.name).toBe("udid-1")
+    expect(pool.panelDevice("ses_1")).toBeUndefined()
+    expect(released).toEqual([])
+    await wait(30)
+    expect(shut).toEqual(["udid-1"])
+  })
+
+  test("switching leaves a device another session still owns alone", async () => {
+    const shut: string[] = []
+    const { pool, renames } = setup(
+      {},
+      {
+        shutdownDelayMs: 5,
+        list: async () => [device("udid-1"), device("udid-2")],
+        shutdown: async (d) => {
+          shut.push(d.udid)
+        },
+      },
+    )
+    await pool.manage(device("udid-1"))
+    await pool.claim("ses_1", "udid-1")
+    await pool.remember("ses_2", "udid-1")
+    await pool.remember("ses_1", "udid-2")
+    expect(renames.filter((r) => r.udid === "udid-1").at(-1)?.name).toBe("udid-1 · in use")
+    await wait(30)
+    expect(shut).toEqual([])
+  })
+
+  test("a panel that moves to another device schedules the old one for shutdown", async () => {
+    const shut: string[] = []
+    const { pool } = setup(
+      {},
+      {
+        shutdownDelayMs: 5,
+        list: async () => [device("udid-1"), device("udid-2")],
+        shutdown: async (d) => {
+          shut.push(d.udid)
+        },
+      },
+    )
+    await pool.manage(device("udid-1"))
+    await pool.panel({ sessionID: "ses_1", udid: "udid-1", state: "open", window: "w" })
+    await pool.claim("ses_1", "udid-2")
+    await pool.panel({ sessionID: "ses_1", udid: "udid-2", state: "open", window: "w" })
+    await wait(30)
+    expect(shut).toEqual(["udid-1"])
+  })
+
+  test("remembers the last device per session and forgets it with the device", async () => {
+    const { pool } = setup()
+    expect(pool.last("ses_1")).toBeUndefined()
+    await pool.claim("ses_1", "udid-1")
+    await pool.releaseManual("ses_1")
+    expect(pool.last("ses_1")).toBe("udid-1")
+    await pool.remember("ses_1", "udid-2")
+    expect(pool.last("ses_1")).toBe("udid-2")
+    await pool.forgetDevice("udid-2")
+    expect(pool.last("ses_1")).toBeUndefined()
+  })
+
+  test("caps the last-device map", async () => {
+    const { pool } = setup()
+    for (let i = 0; i < 501; i += 1) await pool.remember(`ses_${i}`, `udid-${i}`)
+    expect(pool.last("ses_0")).toBeUndefined()
+    expect(pool.last("ses_500")).toBe("udid-500")
+  })
+
+  test("failed gives the device up and drops the affinity", async () => {
+    const { sessions, pool } = setup()
+    await pool.claim("ses_1", "udid-1")
+    await pool.failed("ses_1", "udid-1")
+    expect(sessions.pick("ses_1")).toBeUndefined()
+    expect(pool.last("ses_1")).toBeUndefined()
+  })
+
+  test("reconcile prunes and renames from the listing", async () => {
+    const { sessions, managed, pool, renames } = setup(
+      { ses_1: "udid-gone", ses_2: "udid-ext", ses_3: "udid-live" },
+      {
+        list: async () => [
+          { ...device("udid-live"), name: "udid-live" },
+          { ...device("udid-ext"), name: "External" },
+        ],
+      },
+    )
+    await pool.manage(device("udid-gone"))
+    await pool.manage(device("udid-live"))
+    await pool.reconcile()
+    expect(managed.has("udid-gone")).toBe(false)
+    expect(managed.has("udid-live")).toBe(true)
+    expect(sessions.pick("ses_1")).toBeUndefined()
+    expect(sessions.pick("ses_2")).toBe("udid-ext")
+    expect(renames.at(-1)).toEqual({ udid: "udid-live", name: "udid-live · in use" })
+  })
+
+  test("reconcile changes nothing when listing fails", async () => {
+    const { sessions, managed, pool } = setup(
+      { ses_1: "udid-1" },
+      {
+        list: async () => {
+          throw new Error("no simctl")
+        },
+      },
+    )
+    await pool.manage(device("udid-1"))
+    const warn = console.warn
+    console.warn = () => {}
+    try {
+      await pool.reconcile()
+    } finally {
+      console.warn = warn
+    }
+    expect(managed.has("udid-1")).toBe(true)
+    expect(sessions.pick("ses_1")).toBe("udid-1")
+  })
+
+  test("withLock serializes tasks and survives a rejection", async () => {
+    const { pool } = setup()
+    const order: string[] = []
+    const first = pool.withLock(async () => {
+      await wait(10)
+      order.push("first")
+      throw new Error("boom")
+    })
+    const second = pool.withLock(async () => {
+      order.push("second")
+      return 2
+    })
+    await expect(first).rejects.toThrow("boom")
+    expect(await second).toBe(2)
+    expect(order).toEqual(["first", "second"])
+  })
+
   test("never renames an external device", async () => {
     const { pool, renames } = setup()
     expect(await pool.claim("ses_1", "udid-external")).toBe(true)
     expect(renames).toEqual([])
+  })
+
+  test("reconcile keeps every record when the list comes back empty", async () => {
+    const { managed, pool } = setup({}, { list: async () => [] })
+    await pool.manage(device("udid-1"))
+    await pool.reconcile()
+    expect(managed.has("udid-1")).toBe(true)
+  })
+
+  test("reconcile waits for a locked allocation", async () => {
+    let listed = false
+    const { pool } = setup(
+      {},
+      {
+        list: async () => {
+          listed = true
+          return [device("udid-1")]
+        },
+      },
+    )
+    let finish = () => {}
+    const allocation = pool.withLock(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve
+        }),
+    )
+    const reconciled = pool.reconcile()
+    await wait(5)
+    expect(listed).toBe(false)
+    finish()
+    await allocation
+    await reconciled
+    expect(listed).toBe(true)
   })
 })

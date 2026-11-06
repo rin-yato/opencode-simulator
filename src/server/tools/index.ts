@@ -1,9 +1,8 @@
 import type { Plugin } from "@opencode/plugin"
 import type { PanelUpdate } from "../activity"
-import { ManagedDevices } from "../managed"
 import { cleanServeSimState, type HubOptions } from "../serve-sim"
-import { SessionDevices } from "../session-devices"
-import { SimulatorPool } from "../simulator-pool"
+import { acquirePool } from "../shared-pool"
+import type { SimulatorPool } from "../simulator-pool"
 import type { OpenPanel } from "./context"
 import { registerInputTools } from "./input"
 import { registerInspectionTools } from "./inspect"
@@ -136,13 +135,7 @@ export async function registerTools(
   openPanel?: OpenPanel,
   handlers: SimulatorHandlers = {},
 ): Promise<SimulatorHandle> {
-  const sessions = await SessionDevices.load(ctx.storage)
-  const managed = await ManagedDevices.load(ctx.storage)
-  const pool = new SimulatorPool({
-    sessions,
-    managed,
-    onRelease: handlers.onRelease,
-  })
+  const { pool, release } = await acquirePool(ctx.storage, handlers.onRelease)
   const simulator = { hub, pool, openPanel, onDeviceDeleted: handlers.onDeviceDeleted }
   const abort = new AbortController()
   let sweepCount = 0
@@ -159,7 +152,7 @@ export async function registerTools(
 
   void cleanServeSimState().catch(() => {})
   await syncRunning(ctx, pool, false)
-  void pool.reconcileNames().catch(() => {})
+  void pool.reconcile().catch(() => {})
   watchActivity(ctx, pool, abort.signal)
 
   await ctx.tool.transform((editor) => {
@@ -184,7 +177,7 @@ export async function registerTools(
     dispose: () => {
       abort.abort()
       clearInterval(sweep)
-      pool.dispose()
+      release()
     },
   }
 }

@@ -35,6 +35,8 @@ export interface ActivityOptions {
   readonly shutdownDelayMs?: number
   /** Test seam. Defaults to `simctl shutdown`. */
   readonly shutdown?: (device: Device) => Promise<unknown>
+  /** Test seam. Defaults to `simctl list`. */
+  readonly list?: () => Promise<readonly Device[]>
   /** Called after a claim is taken or released; `force` asks the window to clear it. */
   readonly onRelease?: (sessionID: string, udid: string, force: boolean) => void
   /** Called after a claim changes hands, so a managed device's name can follow it. */
@@ -65,6 +67,7 @@ export class Activity {
   readonly #sessions: SessionDevices
   readonly #shutdownDelayMs: number
   readonly #shutdownDevice: (device: Device) => Promise<unknown>
+  readonly #list: () => Promise<readonly Device[]>
   readonly #onRelease: ((sessionID: string, udid: string, force: boolean) => void) | undefined
   readonly #onChange: ((udid: string) => void | Promise<void>) | undefined
   readonly #shouldShutdown: (udid: string) => boolean
@@ -80,6 +83,7 @@ export class Activity {
     this.#sessions = options.sessions
     this.#shutdownDelayMs = options.shutdownDelayMs ?? DEFAULT_SHUTDOWN_DELAY_MS
     this.#shutdownDevice = options.shutdown ?? ((device) => shutdownDevice(device))
+    this.#list = options.list ?? (() => listDevices())
     this.#onRelease = options.onRelease
     this.#onChange = options.onChange
     this.#shouldShutdown = options.shouldShutdown ?? (() => true)
@@ -109,6 +113,7 @@ export class Activity {
     if (!udid || this.#deleted.has(udid)) return
 
     const ttl = update.ttlMs && update.ttlMs > 0 ? update.ttlMs : DEFAULT_PANEL_TTL_MS
+    const previous = this.#panels.get(key)
     this.#panels.set(key, {
       sessionID: update.sessionID,
       window,
@@ -120,6 +125,22 @@ export class Activity {
     if (!this.#sessions.pick(update.sessionID)) {
       if (await this.#sessions.claim(update.sessionID, udid)) await this.#onChange?.(udid)
     }
+    // The panel moved away; nothing else will look at the device it left.
+    if (previous && previous.udid !== udid) {
+      await this.#onChange?.(previous.udid)
+      await this.#maybeShutdown(previous.udid)
+    }
+  }
+
+  /**
+   * The session's claim moved off `from`. Drop this session's panels there so
+   * they cannot keep it busy, then apply the shutdown policy to it.
+   */
+  async moved(sessionID: string, from: string): Promise<void> {
+    for (const [key, panel] of this.#panels) {
+      if (panel.sessionID === sessionID && panel.udid === from) this.#panels.delete(key)
+    }
+    await this.#maybeShutdown(from)
   }
 
   /** The agent started a turn; its device must not be released mid-work. */
@@ -303,7 +324,7 @@ export class Activity {
     if (this.#stopped || !this.#shouldShutdown(udid)) return
     if (this.#sessions.owners(udid).length > 0 || this.isBusy(udid)) return
     try {
-      const devices = await listDevices()
+      const devices = await this.#list()
       const device = devices.find((candidate) => candidate.udid === udid)
       if (!device || device.state !== "Booted") return
       // A claim can land while `simctl list` runs.

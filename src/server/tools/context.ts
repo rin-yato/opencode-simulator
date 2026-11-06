@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin"
-import { resolveDevice, resolveStartDevice, type Device } from "../devices"
+import { resolveDevice, type Device } from "../devices"
 import type { HubOptions } from "../serve-sim"
 import type { SimulatorPool } from "../simulator-pool"
 
@@ -117,12 +117,16 @@ export const currentDevice = async (
   return device
 }
 
-/** Resolve a device for boot/start; it may still be shut down. */
-export const startDevice = (
+/** Like `currentDevice`, for tools that need a running screen. */
+export const bootedDevice = async (
   simulator: SimulatorContext,
   context: ToolRuntime,
   requested?: string,
-): Promise<Device> =>
-  resolveStartDevice(simulator.pool.pick(context.sessionID, requested), {
-    signal: context.signal,
-  })
+  share?: boolean,
+): Promise<Device> => {
+  const device = await currentDevice(simulator, context, requested, share)
+  if (device.state !== "Booted") {
+    throw new Error(`${device.name} is ${device.state.toLowerCase()}. Run sim_start.`)
+  }
+  return device
+}

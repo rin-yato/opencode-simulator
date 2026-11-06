@@ -2,7 +2,7 @@ import { findRows, readSnapshot } from "../accessibility"
 import { pressButton, rotate, scroll, tapPoint, tapRow, tapSelector, typeText } from "../actions"
 import { run } from "../exec"
 import {
-  currentDevice,
+  bootedDevice,
   define,
   errorText,
   ok,
@@ -99,7 +99,7 @@ export function registerInputTools(editor: ToolEditor, simulator: SimulatorConte
     },
     options: SIM_OPTIONS,
     execute: define(async (input: TapInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid, input.share)
+      const device = await bootedDevice(simulator, context, input.udid, input.share)
       const point = input.x !== undefined || input.y !== undefined
       const selector = Boolean(input.id || input.label || input.value)
       const modes = [point, selector, Boolean(input.text)].filter(Boolean).length
@@ -225,7 +225,7 @@ export function registerInputTools(editor: ToolEditor, simulator: SimulatorConte
     },
     options: SIM_OPTIONS,
     execute: define(async (input: ScrollInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid, input.share)
+      const device = await bootedDevice(simulator, context, input.udid, input.share)
       const result = await scroll(device.udid, input.direction, input.amount ?? 1, {
         ...simulator.hub,
         signal: context.signal,
@@ -251,7 +251,7 @@ export function registerInputTools(editor: ToolEditor, simulator: SimulatorConte
     },
     options: SIM_OPTIONS,
     execute: define(async (input: TypeInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid, input.share)
+      const device = await bootedDevice(simulator, context, input.udid, input.share)
       await typeText(device.udid, input.text, { ...simulator.hub, signal: context.signal })
       let submitError = ""
       if (input.submit) {
@@ -295,7 +295,7 @@ export function registerInputTools(editor: ToolEditor, simulator: SimulatorConte
     },
     options: SIM_OPTIONS,
     execute: define(async (input: ButtonInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid, input.share)
+      const device = await bootedDevice(simulator, context, input.udid, input.share)
       await pressButton(device.udid, input.button, input.duration, {
         ...simulator.hub,
         signal: context.signal,
@@ -323,7 +323,7 @@ export function registerInputTools(editor: ToolEditor, simulator: SimulatorConte
     },
     options: SIM_OPTIONS,
     execute: define(async (input: RotateInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid, input.share)
+      const device = await bootedDevice(simulator, context, input.udid, input.share)
       await rotate(device.udid, input.orientation, { ...simulator.hub, signal: context.signal })
       return ok(`rotated ${input.orientation}`, { udid: device.udid })
     }),

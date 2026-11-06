@@ -39,6 +39,13 @@ describe("matchDevice", () => {
     expect(() => matchDevice(devices, "iPhone 17")).toThrow(/matches multiple simulators/)
   })
 
+  test("ignores unavailable devices when matching by name", () => {
+    const stale = { ...device("iPhone 17 Pro", "udid-stale"), available: false }
+    const list = [stale, device("iPhone 17 Pro", "udid-live")]
+    expect(matchDevice(list, "iPhone 17 Pro").udid).toBe("udid-live")
+    expect(matchDevice(list, "udid-stale").udid).toBe("udid-stale")
+  })
+
   test("reports a missing device", () => {
     expect(() => matchDevice(devices, "Pixel")).toThrow(/No simulator matches/)
   })
