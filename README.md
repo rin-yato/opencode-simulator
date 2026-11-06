@@ -15,6 +15,9 @@
 
 - **A real simulator, in the panel.** The iOS Simulator streams into a side tab.
   Tap, drag, type, rotate, and press hardware buttons without leaving OpenCode.
+  The panel is dark, like the simulator's own preview.
+- **WebRTC by default.** The stream uses H.264 hardware encoding at 60 fps and
+  up to 16 Mbps, with an automatic HTTP fallback.
 - **Tools the agent can use.** 23 `sim_*` tools cover device lifecycle, app
   install/uninstall/erase, accessibility reads, input, UI settings, screenshots,
   waits, and explicit release.
@@ -29,7 +32,8 @@
 - **Bundled skill.** The plugin teaches the agent to use `sim_*` instead of
   `xcrun simctl`, Xcode, `axe`, or generated shell scripts.
 - **Local only.** The stream binds to `127.0.0.1`. No telemetry, no hosted
-  service.
+  service. WebRTC is given a loopback STUN address so the preview never falls
+  back to a public STUN server.
 
 ## Install
 
@@ -95,6 +99,41 @@ sim_screenshot({ width: 500 })
 You can also open **Simulator** from the side-panel menu or the command palette.
 It shows the session's current device, or an empty state after that device has
 been returned to the pool.
+
+### Streaming
+
+Streams use WebRTC by default, with H.264 hardware encoding, a 16 Mbps ceiling,
+and 60 fps. The bitrate is a ceiling: WebRTC backs off when the simulator is
+idle, so a static screen stays cheap. If WebRTC cannot start, the hub falls
+back to HTTP for that device. To trade quality for CPU, add options to the
+plugin entry:
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "opencode-simulator",
+      "options": {
+        "streamFps": 30,
+        "streamBitrate": 12000000,
+        "streamMaxDimension": 1206
+      }
+    }
+  ]
+}
+```
+
+`streamBitrate` and `streamFps` apply to WebRTC; `streamTransport` and
+`streamMaxDimension` apply to both transports. To force HTTP, set
+`streamTransport` to `"http"` and omit the WebRTC quality options.
+
+`streamMaxDimension: 0` (the default) keeps the simulator's native resolution.
+`streamBitrate` accepts 100000–16000000; `streamFps` accepts 1–140;
+`streamMaxDimension` accepts 0–4096.
+
+The panel lives in OpenCode's side region, so its width is the app's: drag the
+region's edge to give the chat more room. OpenCode remembers that width per
+session.
 
 ### Two sessions, same iPhone model
 

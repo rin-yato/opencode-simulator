@@ -36,9 +36,11 @@ serve-sim (127.0.0.1:<port>) -> live stream + input
 
 `sim_start` emits `open` with the calling `sessionID` and waits up to eight
 seconds for an `opened: true` acknowledgement. Only the window that owns that
-session's tab acknowledges. A window without the session answers nothing, so
-another window can still open it. The same window reports panel state through
-`panel`; the server emits `released` when a claim returns to the pool.
+session's tab acknowledges. A window without the session keeps the device and
+opens the panel when the session shows up, so another window can still open it.
+The tool takes a short panel lease before it emits `open`, which keeps the
+claim alive while the simulator boots. The same window reports panel state
+through `panel`; the server emits `released` when a claim returns to the pool.
 
 ### GUI window
 
@@ -56,9 +58,19 @@ for `{ sessionKey, device }` and renders the returned embed. A retry button
 appears if the hub fails. With no device it shows an empty state instead of
 streaming whichever simulator booted first.
 
+![The panel streaming a simulator](panel.png)
+
+The window's copy of the device wins over the server's: an answer without a
+device is not proof that there is nothing to show, because the server drops a
+claim as soon as a turn ends. The panel never clears a device it already has,
+and while it has none it keeps asking the server every 1.5 seconds, so a
+simulator that is assigned a moment later shows up on its own.
+
 The same setup watches `ctx.sessions.list()` and `ctx.layout.state` and pushes
 `{ sessionID, udid, state, window }` to the server over the `panel` method.
-Entries are 30-second leases refreshed by a 10-second heartbeat. When the server
+Entries are 30-second leases refreshed by a 10-second heartbeat. A report
+without a device falls back to the session's own claim, so a window that has
+not learned the device yet still keeps that claim alive. When the server
 releases a claim it emits `released` (`force` for `sim_release`) and the window
 clears that session's device; a `deleted` event clears every window and stops
 the device's hub.
@@ -75,17 +87,37 @@ and `will-navigate`/`will-redirect` only allow the hub's origin.
 `serve-sim` process with:
 
 ```sh
-node .../serve-sim.js --host 127.0.0.1 --port <ephemeral> --single-device <udid>
+node .../serve-sim.js --host 127.0.0.1 --port <ephemeral> \
+  --single-device <udid> --transport webrtc \
+  --webrtc-codec h264 --stun-url stun:127.0.0.1:3478 \
+  --video-bitrate 16000000 --video-fps 60 --max-dimension 0
 ```
 
 `--single-device` is what keeps a panel from streaming whichever simulator
-booted first. A hub start waits for the device to boot (serve-sim boots it when
-needed), so the panel can open before `sim_start` finishes. Startup races
-`error`, `close`, and `exit` so a missing Node fails immediately instead of
-waiting for the readiness timeout. Releasing the pane aborts that wait and stops
-the child; `ensure` and `release` are serialized per device so a reopen cannot
-leave two serve-sim processes. Hubs restart with exponential backoff if the
-process exits unexpectedly.
+booted first. The hub waits for the port to answer, not for the device to boot:
+serve-sim serves its preview page straight away, so the panel shows the
+simulator booting instead of a spinner. The device's readiness is watched in the
+background, and a device that never becomes ready falls back to HTTP.
+Startup races `error`, `close`, and `exit` so a missing Node fails immediately
+instead of waiting for the readiness timeout. Releasing the pane aborts that
+wait and stops the child; `ensure` and `release` are serialized per device so a
+reopen cannot leave two serve-sim processes. Hubs restart with exponential
+backoff if the process exits unexpectedly.
+
+WebRTC is the default transport because serve-sim can send H.264 through
+VideoToolbox and adapt the bitrate down for an idle screen. The bitrate is a
+ceiling, not a constant: 16 Mbps is plenty for a 60 fps screen over loopback. A
+recoverable WebRTC startup failure falls back to `--transport http` for that
+device. An HTTP start is retried once on the same startup races; the fallback
+start itself is not retried. `streamTransport`, `streamBitrate`, `streamFps`,
+and `streamMaxDimension` in the plugin options override the defaults; the
+bitrate and frame rate apply to WebRTC, and bounds are documented in
+[README.md](../README.md).
+
+serve-sim's preview client replaces an empty ICE-server list with Google's
+public STUN servers. The hub passes a loopback STUN URL for every WebRTC hub, so
+the preview gets a non-empty list and never makes a public STUN request;
+loopback host candidates still connect directly.
 
 `src/gui/serve-sim.ts` contains the process-level helpers: CLI resolution, port
 reservation, readiness polling, child shutdown, and the optional hiding of
@@ -254,6 +286,8 @@ does not use `process.execPath`, `ELECTRON_RUN_AS_NODE`, or `npx`.
 | `src/gui/main.ts` | Panes, embeds, idle release, navigation allowlist |
 | `src/gui/hub.ts` | One serve-sim slot per device, serialized release |
 | `src/gui/serve-sim.ts` | CLI resolution and child-process helpers |
+| `src/gui/stream-options.ts` | WebRTC/HTTP quality defaults and option bounds |
+| `src/gui/panel-device.ts` | Which simulator the panel shows, and how often it asks |
 | `src/gui/panel.tsx` | Embedded preview and retry state |
 | `src/gui/requests.ts` | Session → requested device in `localStorage` |
 | `src/gui/contract.ts` | Main ↔ window IPC schema |
@@ -263,6 +297,7 @@ does not use `process.execPath`, `ELECTRON_RUN_AS_NODE`, or `npx`.
 
 Bun tests cover the pure pieces: device matching and size formatting, pool
 selection and naming, managed-device storage, panel leases and holds, release
-and tombstones, simulator-pool claims, session-device cap/claim/forget, and the
-localStorage session cap and removal. There is no automated test for serve-sim
-or Electron; those require a real macOS session.
+and tombstones, simulator-pool claims, session-device cap/claim/forget, the
+localStorage session cap and removal, the panel's device resolution, and
+stream-option bounds. There is no automated test for serve-sim or Electron;
+those require a real macOS session.
