@@ -11,7 +11,13 @@ export interface SimulatorPoolOptions {
   readonly shutdownDelayMs?: number
   /** Test seam. Defaults to `simctl rename`. */
   readonly rename?: (udid: string, name: string) => Promise<unknown>
+  /** Test seam. Defaults to `simctl list`. */
+  readonly list?: () => Promise<readonly Device[]>
+  /** Test seam. Defaults to `simctl shutdown`. */
+  readonly shutdown?: (device: Device) => Promise<unknown>
 }
+
+const MAX_LAST_DEVICES = 500
 
 /**
  * The single server-side owner of session/device claims.
@@ -29,15 +35,22 @@ export class SimulatorPool {
   readonly #applied = new Map<string, string>()
   /** One rename at a time per device; claim and release can race. */
   readonly #renames = new Map<string, Promise<void>>()
+  readonly #list: () => Promise<readonly Device[]>
+  /** session -> last device it held, so the next start gets the same build back. */
+  readonly #last = new Map<string, string>()
+  #lock: Promise<unknown> = Promise.resolve()
 
   constructor(options: SimulatorPoolOptions) {
     this.sessions = options.sessions
     this.managed = options.managed
     this.#renameDevice = options.rename ?? ((udid, name) => renameDevice(udid, name))
+    this.#list = options.list ?? (() => listDevices())
     this.activity = new Activity({
       sessions: options.sessions,
       onRelease: options.onRelease,
       shutdownDelayMs: options.shutdownDelayMs,
+      shutdown: options.shutdown,
+      list: this.#list,
       shouldShutdown: (udid) => options.managed.has(udid),
       onChange: (udid) => this.syncName(udid),
     })
@@ -79,15 +92,34 @@ export class SimulatorPool {
     await this.#rename(udid, busy ? inUseName(base) : base)
   }
 
-  /** Repair names after a restart: a mark that outlived its claim is stripped. */
-  async reconcileNames(): Promise<void> {
+  /**
+   * Repair state after a restart: forget devices deleted outside the plugin,
+   * and strip a name mark that outlived its claim.
+   */
+  reconcile(): Promise<void> {
+    // Under the lock: a device created while the list runs would look deleted.
+    return this.withLock(() => this.#reconcile())
+  }
+
+  async #reconcile(): Promise<void> {
     let devices: readonly Device[]
     try {
-      devices = await listDevices()
+      devices = await this.#list()
     } catch (cause) {
       console.warn("opencode-simulator: could not reconcile simulator names", cause)
       return
     }
+    // CoreSimulator can answer with nothing while it restarts.
+    if (devices.length === 0) return
+    const existing = new Set(devices.map((device) => device.udid))
+    const stale = new Set<string>()
+    for (const entry of this.managed.entries()) {
+      if (!existing.has(entry.udid)) stale.add(entry.udid)
+    }
+    for (const [, udid] of this.sessions.entries()) {
+      if (!existing.has(udid)) stale.add(udid)
+    }
+    for (const udid of stale) await this.forgetDevice(udid)
     for (const device of devices) {
       const base = this.managed.get(device.udid)?.name
       if (!base) continue
@@ -122,18 +154,50 @@ export class SimulatorPool {
 
   /** Claim a device exclusively and mark it recently used. */
   async claim(sessionID: string, udid: string): Promise<boolean> {
+    const previous = this.sessions.pick(sessionID)
     const claimed = await this.sessions.claim(sessionID, udid)
-    if (claimed) {
-      this.activity.use(udid)
-      await this.syncName(udid)
-    }
+    if (claimed) await this.#took(sessionID, udid, previous)
     return claimed
   }
 
   /** Point a session at a device, allowing deliberate sharing. */
   async remember(sessionID: string, udid: string): Promise<void> {
+    const previous = this.sessions.pick(sessionID)
     await this.sessions.remember(sessionID, udid)
+    await this.#took(sessionID, udid, previous)
+  }
+
+  /** The device this session held last, if it still exists. Not persisted. */
+  last(sessionID: string): string | undefined {
+    return this.#last.get(sessionID)
+  }
+
+  /** A boot failed: give the device up so the next start does not retry it. */
+  async failed(sessionID: string, udid: string): Promise<void> {
+    await this.releaseManual(sessionID, udid)
+    if (this.#last.get(sessionID) === udid) this.#last.delete(sessionID)
+  }
+
+  /** Run `task` after every earlier locked task; a failure does not block the next. */
+  withLock<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.#lock.then(task, task)
+    this.#lock = result.catch(() => {})
+    return result
+  }
+
+  async #took(sessionID: string, udid: string, previous: string | undefined): Promise<void> {
+    this.#last.delete(sessionID)
+    this.#last.set(sessionID, udid)
+    while (this.#last.size > MAX_LAST_DEVICES) {
+      const oldest = this.#last.keys().next().value
+      if (oldest === undefined) break
+      this.#last.delete(oldest)
+    }
     this.activity.use(udid)
+    if (previous && previous !== udid) {
+      await this.activity.moved(sessionID, previous)
+      await this.syncName(previous)
+    }
     await this.syncName(udid)
   }
 
@@ -163,6 +227,9 @@ export class SimulatorPool {
     this.activity.forget(udid)
     await this.managed.forget(udid)
     this.#applied.delete(udid)
+    for (const [sessionID, last] of this.#last) {
+      if (last === udid) this.#last.delete(sessionID)
+    }
     return owners
   }
 

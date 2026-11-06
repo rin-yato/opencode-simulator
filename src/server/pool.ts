@@ -51,3 +51,59 @@ export const poolDeviceName = (source: Device, devices: readonly Device[]): stri
   while (taken.has(`${model} ${index}`)) index += 1
   return `${model} ${index}`
 }
+
+const iosVersion = (device: Device): number[] =>
+  (/\.iOS-([\d-]+)$/.exec(device.runtimeId)?.[1] ?? "").split("-").map(Number)
+
+const newerRuntime = (a: Device, b: Device): number => {
+  const x = iosVersion(a)
+  const y = iosVersion(b)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const diff = (y[i] ?? 0) - (x[i] ?? 0)
+    if (diff) return diff
+  }
+  return 0
+}
+
+/**
+ * Which model and runtime a new session gets when it names none: a booted
+ * device, then an existing pool, then the newest iPhone Pro. The result only
+ * defines the pool; the caller never claims it unless it is a free managed one.
+ */
+export const chooseReference = (
+  devices: readonly Device[],
+  isFree: (udid: string) => boolean,
+  isManaged: (udid: string) => boolean,
+): Device => {
+  const ios = devices.filter(
+    (device) =>
+      device.available &&
+      device.deviceType &&
+      device.runtimeId &&
+      device.runtimeId.includes(".iOS-"),
+  )
+  const booted = ios.filter((device) => device.state === "Booted")
+  const free = booted.find((device) => isFree(device.udid)) ?? booted[0]
+  if (free) return free
+
+  const managed = ios
+    .filter((device) => isManaged(device.udid))
+    .sort(
+      (a, b) =>
+        a.name.localeCompare(b.name, undefined, { numeric: true }) || a.udid.localeCompare(b.udid),
+    )[0]
+  if (managed) return managed
+
+  const newest = [...ios].sort(newerRuntime)[0]
+  if (!newest) throw new Error("No iOS simulators are installed. Add an iOS runtime in Xcode.")
+  const onNewest = ios.filter((device) => newerRuntime(device, newest) === 0)
+  const pro = onNewest
+    .map((device) => ({ device, n: /^iPhone (\d+) Pro$/.exec(baseName(device.name))?.[1] }))
+    .filter((entry) => entry.n !== undefined)
+    .sort((a, b) => Number(b.n) - Number(a.n))[0]
+  return (
+    pro?.device ??
+    onNewest.find((device) => baseName(device.name).startsWith("iPhone")) ??
+    onNewest[0]!
+  )
+}

@@ -10,7 +10,7 @@ import {
   type UiSetting,
 } from "../ui-settings"
 import {
-  currentDevice,
+  bootedDevice,
   define,
   ok,
   SHARE_SCHEMA,
@@ -64,7 +64,7 @@ export function registerSettingsTools(editor: ToolEditor, simulator: SimulatorCo
     },
     options: SIM_OPTIONS,
     execute: define(async (input: SettingsInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid, input.share)
+      const device = await bootedDevice(simulator, context, input.udid, input.share)
       if (!input.setting) {
         const output = await readSettings(device.udid, {
           ...simulator.hub,
@@ -107,7 +107,7 @@ export function registerSettingsTools(editor: ToolEditor, simulator: SimulatorCo
     },
     options: SIM_OPTIONS,
     execute: define(async (input: KeyboardInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid, input.share)
+      const device = await bootedDevice(simulator, context, input.udid, input.share)
       const state = input.state ?? "show"
       const output = await softwareKeyboard(device.udid, state, {
         ...simulator.hub,
@@ -154,7 +154,7 @@ export function registerSettingsTools(editor: ToolEditor, simulator: SimulatorCo
     },
     options: SIM_OPTIONS,
     execute: define(async (input: StatusBarToolInput, context: ToolRuntime) => {
-      const device = await currentDevice(simulator, context, input.udid, input.share)
+      const device = await bootedDevice(simulator, context, input.udid, input.share)
       const output = await statusBar(device.udid, input, { signal: context.signal })
       return ok(output, { udid: device.udid })
     }),
