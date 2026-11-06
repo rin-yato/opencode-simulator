@@ -34,6 +34,14 @@ serve-sim (127.0.0.1:<port>) -> live stream + input
 - the portable RPC contract in `src/rpc.ts`: an `open` event, an `opened`
   acknowledgement, a `panel` method, and a `released` event
 
+The skill is registered by hand, so its metadata comes from the file's
+frontmatter (`src/skills/frontmatter.ts`): `name`, `description`, and
+`metadata.opencode/autoinvoke`, with the legacy `disable-model-invocation` also
+accepted. The description is what the model reads to decide whether the skill
+is relevant, so it is written to trigger on the word "simulator" and on any work
+that involves driving a simulator. A file without frontmatter still registers,
+falling back to a built-in description.
+
 `sim_start` emits `open` with the calling `sessionID` and waits up to eight
 seconds for an `opened: true` acknowledgement. Only the window that owns that
 session's tab acknowledges. A window without the session keeps the device and
@@ -292,12 +300,13 @@ does not use `process.execPath`, `ELECTRON_RUN_AS_NODE`, or `npx`.
 | `src/gui/requests.ts` | Session → requested device in `localStorage` |
 | `src/gui/contract.ts` | Main ↔ window IPC schema |
 | `src/skills/simulator.md` | Bundled agent skill |
+| `src/skills/frontmatter.ts` | Skill metadata parsing for the bundled skill |
 
 ## Tests
 
 Bun tests cover the pure pieces: device matching and size formatting, pool
 selection and naming, managed-device storage, panel leases and holds, release
 and tombstones, simulator-pool claims, session-device cap/claim/forget, the
-localStorage session cap and removal, the panel's device resolution, and
-stream-option bounds. There is no automated test for serve-sim or Electron;
-those require a real macOS session.
+localStorage session cap and removal, the panel's device resolution, skill
+frontmatter parsing, and stream-option bounds. There is no automated test for
+serve-sim or Electron; those require a real macOS session.

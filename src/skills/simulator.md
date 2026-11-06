@@ -1,3 +1,17 @@
+---
+name: Simulator
+description: >-
+  Drive and test the local iOS Simulator with the sim_* tools: boot devices, read the
+  accessibility tree, tap, scroll, type, take screenshots, install and launch apps, and
+  change simulator settings. Use whenever the user says "simulator" or "simulate", names
+  an iPhone or iPad simulator, mentions simctl or AXe, asks to run, open, install, or
+  launch an app on a simulator, or asks to test, debug, inspect, or automate an iOS app
+  UI. Prefer the sim_* tools over xcrun simctl, axe, Xcode, idb, AppleScript, or ad-hoc
+  scripts.
+metadata:
+  opencode/autoinvoke: true
+---
+
 Use the `sim` tools to boot, inspect, and drive the local iOS Simulator. They
 wrap AXe, serve-sim, and simctl behind one small API and keep working while the
 Simulator.app window is hidden. They are the supported way to test an iOS app in

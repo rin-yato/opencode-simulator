@@ -5,11 +5,19 @@ import { Plugin, Skill } from "@opencode/plugin"
 import { SIMULATOR_RPC } from "./rpc"
 import { isPanelState } from "./server/activity"
 import { registerTools, type SimulatorHandle } from "./server/tools/index"
+import { parseSkillFile } from "./skills/frontmatter"
 
 const OPEN_TIMEOUT_MS = 8_000
 
 const SKILL_FILE = fileURLToPath(new URL("./skills/simulator.md", import.meta.url))
-const SKILL_DESCRIPTION =
+const SKILL_ID = Skill.ID.make("simulator")
+const SKILL_NAME = Skill.Name.make("Simulator")
+/**
+ * The skill's own description is what makes the model load it, so it lives in
+ * the skill file's frontmatter. This is the fallback for a file that lost its
+ * frontmatter: without a description the skill is never advertised.
+ */
+const SKILL_DESCRIPTION_FALLBACK =
   "Drive and test the local iOS Simulator: boot devices, read the accessibility tree, tap, scroll, type, take screenshots, and change simulator settings. Use whenever the user asks to test, debug, or inspect an iOS app UI, or mentions the simulator or an iPhone app. Use the sim_* tools, not xcrun simctl, Xcode, axe, or ad-hoc scripts."
 
 export default Plugin.define({
@@ -17,13 +25,16 @@ export default Plugin.define({
   async setup(ctx) {
     if (process.platform === "darwin") {
       try {
-        const content = readFileSync(SKILL_FILE, "utf8")
+        const raw = readFileSync(SKILL_FILE, "utf8")
+        const { frontmatter, content } = parseSkillFile(raw)
         await ctx.skill.transform((editor) => {
           editor.add({
-            id: Skill.ID.make("simulator"),
-            name: Skill.Name.make("Simulator"),
-            description: SKILL_DESCRIPTION,
-            autoinvoke: true,
+            id: SKILL_ID,
+            name: Skill.Name.make(frontmatter.name ?? SKILL_NAME),
+            // The description is what the model reads to decide whether the
+            // skill is relevant. Without one the skill is never advertised.
+            description: frontmatter.description ?? SKILL_DESCRIPTION_FALLBACK,
+            autoinvoke: frontmatter.autoinvoke ?? true,
             path: Skill.Info.fields.path.make(SKILL_FILE),
             content,
           })

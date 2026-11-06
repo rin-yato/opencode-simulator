@@ -30,7 +30,9 @@
   they are only a model/app reference unless you pass their UDID explicitly.
   The pool keeps up to five managed devices per model and runtime.
 - **Bundled skill.** The plugin teaches the agent to use `sim_*` instead of
-  `xcrun simctl`, Xcode, `axe`, or generated shell scripts.
+  `xcrun simctl`, Xcode, `axe`, or generated shell scripts. The skill's own
+  frontmatter says when to load it, so it triggers on the word "simulator" and
+  on any work that involves driving one.
 - **Local only.** The stream binds to `127.0.0.1`. No telemetry, no hosted
   service. WebRTC is given a loopback STUN address so the preview never falls
   back to a public STUN server.
