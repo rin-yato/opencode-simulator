@@ -130,3 +130,17 @@ export const bootedDevice = async (
   }
   return device
 }
+
+/**
+ * Keep an open panel on the session's device across a claim that does not open
+ * one itself. Call before claiming: the claim drops the panel's entry, and a
+ * window left on the old device would keep it busy through its heartbeat.
+ */
+export const panelFollower = (simulator: SimulatorContext, sessionID: string) => {
+  const before = simulator.pool.panelDevice(sessionID)
+  return (udid: string): boolean => {
+    if (!before || before === udid) return false
+    void simulator.openPanel?.(udid, sessionID).catch(() => {})
+    return true
+  }
+}

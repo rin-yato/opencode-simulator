@@ -26,6 +26,7 @@ import {
   define,
   errorText,
   ok,
+  panelFollower,
   partial,
   SHARE_SCHEMA,
   SIM_OPTIONS,
@@ -109,7 +110,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const FROM_SCHEMA = {
   type: "string",
   description:
-    "Simulator name or UDID whose model and runtime to use. You get a managed device of that model; `from` itself is not claimed.",
+    "Simulator name or UDID whose model and runtime to use. You get a managed device of that model; an external `from` is never claimed.",
 } as const
 
 const HOLD_SCHEMA = {
@@ -128,12 +129,6 @@ const HOLD_MINUTES_SCHEMA = {
 const holdOptions = (input: { readonly hold?: boolean; readonly holdMinutes?: number }) => {
   const holdMs = input.holdMinutes ? input.holdMinutes * 60_000 : undefined
   return { hold: input.hold === true || holdMs !== undefined, holdMs }
-}
-
-/** Move the session's open panel to the device it just claimed. */
-const followPanel = (simulator: SimulatorContext, sessionID: string, udid: string): void => {
-  const current = simulator.pool.panelDevice(sessionID)
-  if (current && current !== udid) void simulator.openPanel?.(udid, sessionID).catch(() => {})
 }
 
 /** Exact UDID or exact name only: delete must never hit a fragment by mistake. */
@@ -280,6 +275,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
     options: SIM_OPTIONS,
     execute: define(async (input: BootInput, context: ToolRuntime) => {
       const pool = simulator.pool
+      const followPanel = panelFollower(simulator, context.sessionID)
       const { device, created } = await allocate(pool, {
         sessionID: context.sessionID,
         udid: input.udid,
@@ -288,7 +284,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
         ...holdOptions(input),
         signal: context.signal,
       })
-      followPanel(simulator, context.sessionID, device.udid)
+      const moved = followPanel(device.udid)
       let output: string
       try {
         output = await bootDevice(device, { signal: context.signal })
@@ -301,7 +297,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
         [
           output,
           `release=${release}`,
-          "panel=closed",
+          `panel=${moved ? "moved" : pool.panelState(context.sessionID)}`,
           ...(created ? [`pool=created ${device.name}; kept for later sessions`] : []),
         ].join("\n"),
         {
@@ -317,7 +313,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
   editor.add({
     name: "create",
     description:
-      "Create a managed simulator with the same model and runtime as `from`, and claim it for this session. Optionally boot it and install an app from `from`. The pool holds five per model and runtime; force exceeds that limit.",
+      "Create a managed simulator with the same model and runtime as `from`, and claim it for this session. Passing `app` also boots it and installs that app from `from`. The pool holds five per model and runtime; force exceeds that limit.",
     input: {
       type: "object",
       properties: {
@@ -345,6 +341,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
     options: SIM_OPTIONS,
     execute: define(async (input: CreateInput, context: ToolRuntime) => {
       const pool = simulator.pool
+      const followPanel = panelFollower(simulator, context.sessionID)
       const { created, source } = await pool.withLock(async () => {
         const devices = await listDevices({ signal: context.signal })
         const own = pool.pick(context.sessionID)
@@ -376,7 +373,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
         )
         return { created, source }
       })
-      followPanel(simulator, context.sessionID, created.udid)
+      followPanel(created.udid)
 
       try {
         let booted = ""
