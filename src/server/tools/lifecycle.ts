@@ -649,20 +649,23 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
       const { device, reference, created, refresh } = target
 
       // Open the tab before boot. The panel starts its hub immediately and
-      // serve-sim waits for the device, so the user sees the simulator (or a
-      // loader) while a fresh device's first boot runs. The short server lease
-      // protects the claim until the window reports its own panel.
+      // serve-sim waits for the device, so the user sees the simulator booting
+      // while a fresh device's first boot runs.
+      //
+      // The server lease is taken first. The window acks the open request only
+      // after it mounted the tab, and the turn can end in between: without the
+      // lease the claim would be released while the simulator is still booting,
+      // and the panel would come up empty.
+      const lease = simulator.pool.panel({
+        sessionID: context.sessionID,
+        udid: device.udid,
+        state: "open",
+        window: "tool",
+        ttlMs: 30_000,
+      })
       const panel = openPanel(device.udid, context.sessionID)
         .then(async (opened) => {
-          if (opened) {
-            await simulator.pool.panel({
-              sessionID: context.sessionID,
-              udid: device.udid,
-              state: "open",
-              window: "tool",
-              ttlMs: 15_000,
-            })
-          }
+          if (opened) await lease
           return opened
         })
         .catch(() => false)

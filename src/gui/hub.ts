@@ -10,12 +10,22 @@ import {
   reservePort,
   resolveCli,
   stopChild,
+  waitForHttp,
   waitForReady,
 } from "./serve-sim"
+import { resolveStreamOptions, type StreamTransport } from "./stream-options"
 
 const RESTART_BASE_MS = 1_000
 const RESTART_MAX_MS = 30_000
 const RESTART_RESET_MS = 60_000
+
+/**
+ * serve-sim's preview client falls back to Google's public STUN servers when
+ * the server sends no ICE servers. The hub only streams over loopback, so give
+ * it a loopback STUN address instead: the client gets a non-empty list, never
+ * contacts a public server, and host candidates still connect directly.
+ */
+const LOOPBACK_STUN = "stun:127.0.0.1:3478"
 
 const HubState = Schema.Struct({
   pid: Schema.Int,
@@ -54,12 +64,16 @@ interface Slot {
   port: number | null
   url: string | null
   starting: Promise<{ readonly url: string }> | null
+  /** Waits for the device to boot after the preview page is already up. */
+  ready: Promise<void> | null
   releasing: Promise<void> | null
   restartTimer: ReturnType<typeof setTimeout> | null
   restartDelay: number
   startedAt: number
   /** No panel wants this device any more; a start in flight must stop itself. */
   released: boolean
+  /** WebRTC failed once, so the next start uses HTTP instead of retrying. */
+  fellBack: boolean
   readonly intentionalStops: Set<ChildProcess>
 }
 
@@ -70,11 +84,13 @@ const emptySlot = (device: string): Slot => ({
   port: null,
   url: null,
   starting: null,
+  ready: null,
   releasing: null,
   restartTimer: null,
   restartDelay: RESTART_BASE_MS,
   startedAt: 0,
   released: false,
+  fellBack: false,
   intentionalStops: new Set(),
 })
 
@@ -88,6 +104,7 @@ export function createHubManager(ctx: MainContext): HubManager {
     (typeof ctx.options.hubCli === "string" ? ctx.options.hubCli : undefined)
   const keepSimulatorVisible =
     process.env.OPENCODE_SIMULATOR_SHOW_SIMULATOR === "1" || ctx.options.showSimulator === true
+  const stream = resolveStreamOptions(ctx.options)
 
   const slots = new Map<string, Slot>()
   const startedListeners = new Set<(started: HubStarted) => void>()
@@ -162,7 +179,10 @@ export function createHubManager(ctx: MainContext): HubManager {
     }, delay)
   }
 
-  const startSlot = async (slot: Slot): Promise<{ readonly url: string }> => {
+  const startSlot = async (
+    slot: Slot,
+    transport: StreamTransport,
+  ): Promise<{ readonly url: string }> => {
     if (slot.released) throw new Error("The simulator hub was released.")
     const cli = resolveCli(explicitCli)
     if (!cli) {
@@ -182,7 +202,34 @@ export function createHubManager(ctx: MainContext): HubManager {
       // whichever simulator booted first.
       "--single-device",
       slot.device,
+      "--transport",
+      transport,
+      "--max-dimension",
+      String(stream.maxDimension),
     ]
+    if (transport === "webrtc") {
+      // H.264 uses VideoToolbox on macOS. The bitrate is a ceiling: WebRTC
+      // backs off when the simulator is idle. The loopback STUN keeps the
+      // preview client from falling back to Google's public STUN servers.
+      args.push(
+        "--webrtc-codec",
+        "h264",
+        "--stun-url",
+        LOOPBACK_STUN,
+        "--video-bitrate",
+        String(stream.bitrate),
+        "--video-fps",
+        String(stream.fps),
+      )
+    }
+
+    ctx.log.write("info", "Starting simulator hub", {
+      device: slot.device,
+      transport,
+      bitrate: stream.bitrate,
+      fps: stream.fps,
+      maxDimension: stream.maxDimension,
+    })
 
     const child = spawn(cli.command, args, {
       cwd: homedir(),
@@ -237,7 +284,10 @@ export function createHubManager(ctx: MainContext): HubManager {
       })
     })
     try {
-      await Promise.race([waitForReady(url, slot.device, slot.abort.signal), exited, failed])
+      // The preview page answers before the device is booted. Waiting for the
+      // port instead of for the device lets the panel show the simulator
+      // booting rather than a spinner.
+      await Promise.race([waitForHttp(url, slot.abort.signal), exited, failed])
     } catch (cause) {
       await stopSlotChild(slot, child).catch(() => {})
       throw cause
@@ -251,27 +301,89 @@ export function createHubManager(ctx: MainContext): HubManager {
     slot.url = url
     if (!keepSimulatorVisible) hideSimulatorWindow(ctx)
     for (const listener of startedListeners) listener({ device: slot.device, url })
+    // The device can still be booting. Watch it in the background: one that
+    // never becomes ready falls back to HTTP, like a failed start.
+    slot.ready = watchReady(slot, transport, url)
     return { url }
+  }
+
+  /**
+   * Wait for the device to boot. A device that never becomes ready is the one
+   * case where WebRTC is retried over HTTP, because the panel is already
+   * showing the preview page.
+   */
+  const watchReady = async (
+    slot: Slot,
+    transport: StreamTransport,
+    url: string,
+  ): Promise<void> => {
+    try {
+      await waitForReady(url, slot.device, slot.abort.signal)
+    } catch (cause) {
+      if (stopped || slot.released) return
+      const message = cause instanceof Error ? cause.message : String(cause)
+      if (!/did not become ready in time/i.test(message)) return
+      ctx.log.write("warn", "The simulator hub never became ready", {
+        device: slot.device,
+        error: message,
+      })
+      // WebRTC falls back to HTTP. On HTTP there is nothing left to fall back
+      // to, so the preview stays as it is instead of restarting in a loop.
+      if (transport === "webrtc") await fallbackToHttp(slot, message)
+    }
+  }
+
+  /** Stop the current child and start the slot again on another transport. */
+  const restart = async (slot: Slot, transport: StreamTransport): Promise<void> => {
+    if (slot.released || stopped) return
+    const child = slot.child
+    clearChild(slot)
+    if (child) await stopSlotChild(slot, child).catch(() => {})
+    if (slot.released || stopped) return
+    try {
+      await startSlot(slot, transport)
+    } catch (cause) {
+      ctx.log.write("error", "simulator hub restart failed", {
+        device: slot.device,
+        error: String(cause),
+      })
+    }
+  }
+
+  /** A WebRTC failure falls back to HTTP for this device, once. */
+  const fallbackToHttp = async (slot: Slot, message: string): Promise<void> => {
+    if (slot.released || stopped || slot.fellBack) return
+    slot.fellBack = true
+    ctx.log.write("warn", "WebRTC stream failed; falling back to HTTP", {
+      device: slot.device,
+      error: message,
+    })
+    await restart(slot, "http")
   }
 
   const ensureSlot = (slot: Slot) => {
     if (stopped) return Promise.reject(new Error("The simulator hub is stopped."))
     if (slot.url) return Promise.resolve({ url: slot.url })
-    slot.starting ??= startSlot(slot)
+    const transport = slot.fellBack ? "http" : stream.transport
+    slot.starting ??= startSlot(slot, transport)
       .catch((cause) => {
         const message = cause instanceof Error ? cause.message : String(cause)
-        // A port can be taken between reserve and spawn. Retry once on the
-        // startup races that can recover; a missing Node fails immediately.
-        if (
-          slot.released ||
-          stopped ||
-          !/exited before ready|closed before ready|EADDRINUSE|address already in use/i.test(
+        // A port can be taken between reserve and spawn; a nonexistent Node
+        // fails immediately. Those are quick startup races and are worth one
+        // more try.
+        const startupRace =
+          /exited before ready|closed before ready|EADDRINUSE|address already in use|did not answer in time/i.test(
             message,
           )
-        ) {
+        if (slot.released || stopped || !startupRace) {
           throw cause
         }
-        return startSlot(slot)
+        const retry = transport === "webrtc" ? fallbackToHttp(slot, message) : restart(slot, transport)
+        return retry.then(() => {
+          const url = slot.url
+          if (!url) throw cause
+          return { url }
+        })
       })
       .finally(() => {
         slot.starting = null

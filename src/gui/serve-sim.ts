@@ -90,6 +90,32 @@ export const commandLine = (pid: number) => {
   }
 }
 
+/**
+ * Wait until the hub's HTTP server answers.
+ *
+ * The preview page is served before the device is booted, so the panel can
+ * show the simulator booting instead of a spinner. Any response means the
+ * server is up; `/readyz` is what says the device itself is ready.
+ */
+export async function waitForHttp(
+  url: string,
+  signal: AbortSignal,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (signal.aborted) throw new Error("The simulator hub start was cancelled.")
+    try {
+      await fetch(url, { signal: AbortSignal.timeout(1_000) })
+      return
+    } catch {
+      // The server is still starting.
+    }
+    await sleep(100)
+  }
+  throw new Error("The simulator hub did not answer in time.")
+}
+
 export async function waitForReady(
   url: string,
   device: string,

@@ -1,4 +1,9 @@
-import { WebContentsView, session as electronSession, type BrowserWindow } from "electron"
+import {
+  WebContentsView,
+  session as electronSession,
+  type BrowserWindow,
+  type WebContents,
+} from "electron"
 import type { Embed, Plugin } from "@opencode/plugin/gui/main"
 import { SimulatorIpc } from "./contract"
 import { createHubManager } from "./hub"
@@ -18,6 +23,31 @@ const paneId = (windowId: number, sessionKey: string) => `${windowId}\u0000${ses
 
 /** How long a hub lives after its last panel closes, so reopening is instant. */
 const RELEASE_IDLE_MS = 30_000
+
+/** serve-sim's preview is a dark page; the panel keeps that look. */
+const PREVIEW_BACKGROUND = "#0a0a0a"
+
+/**
+ * Load the preview page.
+ *
+ * The hub answers HTTP as soon as it listens, before the device is booted, so
+ * the panel can show the simulator booting instead of a spinner. The page can
+ * still be a moment away from accepting a connection, so a failed load is
+ * retried a few times before the panel gives up.
+ */
+const loadPreview = async (contents: WebContents, url: string): Promise<void> => {
+  let last: unknown
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await contents.loadURL(url)
+      return
+    } catch (cause) {
+      last = cause
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+  }
+  throw last
+}
 
 const setup: Plugin.MainSetup = (ctx) => {
   ctx.log.write("info", "opencode-simulator main loaded")
@@ -95,7 +125,7 @@ const setup: Plugin.MainSetup = (ctx) => {
           session: simulatorSession,
         },
       })
-      view.setBackgroundColor("#000000")
+      view.setBackgroundColor(PREVIEW_BACKGROUND)
       view.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
       const allowedOrigin = new URL(url).origin
       const allowNavigation = (target: string): boolean => {
@@ -136,7 +166,7 @@ const setup: Plugin.MainSetup = (ctx) => {
       })
 
       try {
-        await view.webContents.loadURL(url)
+        await loadPreview(view.webContents, url)
       } catch (cause) {
         disposePane(pane)
         throw cause
