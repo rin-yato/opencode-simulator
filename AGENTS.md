@@ -19,10 +19,36 @@ session scoping, or the hub.
 ```sh
 bun install
 bun run check     # typecheck + unit tests
+bun audit         # exits 1 for the known moderates below
 bun run build     # dist/gui-experimental.cjs
+bun run changeset # add a release changeset
 bun run dev       # GUI watch mode
 bun run format
 ```
+
+Publishing is automatic. Every push to `main` runs
+`.github/workflows/release.yml`, which consumes pending changesets (or creates a
+patch changeset when there are none), bumps the version, commits
+`chore(release): vX.Y.Z`, and publishes to npm. The first publish is the
+exception: it ships the current version as-is without a release commit. Add
+`bun run changeset` output to a PR to choose a minor or major bump. The workflow
+needs an `NPM_TOKEN` repository secret: a granular npm token with **Bypass
+two-factor authentication** enabled and read/write package access. For the first
+publish, choose "All packages" (or type `opencode-simulator`), because the
+package dropdown only lists packages that already exist. Retry a failed release
+with `gh workflow run release.yml`.
+
+npm deprecates direct publishing with granular access tokens in January 2027.
+Switch to npm trusted publishing once the repository is public; provenance is
+not generated from private source repositories. Test the versioning in a
+throwaway clone with `DRY_RUN=true bash scripts/release.sh`; it leaves the
+version bump in that clone's working tree.
+
+`bun audit` reports two moderate advisories through `@opencode/plugin`'s pinned
+`glob` and `minimatch`. They are tooling dependencies, not part of the GUI bundle;
+do not force major overrides without checking the OpenCode SDK. The automated
+release commits to `main`, so keep that branch unprotected or replace the script
+with a version-PR flow before enabling branch protection.
 
 The server part loads from `src/`. The GUI is bundled. `dist/` is not committed;
 run `bun run build` after GUI changes.

@@ -8,7 +8,11 @@
 </div>
 
 <p align="center">
-  <img src="./screenshot.png" alt="An agent driving an iOS app in the Simulator panel" width="900" />
+  <a href="https://www.npmjs.com/package/opencode-simulator"><img alt="npm version" src="https://img.shields.io/npm/v/opencode-simulator.svg" /></a>
+</p>
+
+<p align="center">
+  <img src="https://unpkg.com/opencode-simulator/screenshot.png" alt="An agent driving an iOS app in the Simulator panel" width="900" />
 </p>
 
 ## What you get
@@ -42,7 +46,13 @@
 Requires macOS with Xcode and an iOS runtime, OpenCode Desktop 2.2+, and Node
 22+ on `PATH`.
 
-Add the plugin to `~/.config/opencode/opencode.jsonc`:
+Install it with the OpenCode CLI:
+
+```sh
+opencode plugin add opencode-simulator
+```
+
+Or add the plugin to `~/.config/opencode/opencode.jsonc`:
 
 ```jsonc
 {
@@ -206,7 +216,7 @@ sim_delete({ udid: "iPhone 17 Pro 1" })
 | `sim_settings` `sim_keyboard` `sim_statusbar` | UI settings |
 
 Arguments, return values, and failure modes live in
-[docs/tools.md](docs/tools.md).
+[docs/tools.md](https://unpkg.com/opencode-simulator/docs/tools.md).
 
 ## How it works
 
@@ -217,7 +227,7 @@ that session requested. The window also reports whether the panel is open; the
 server uses that plus the agent's run state to decide when a device returns to
 the pool.
 
-More detail: [docs/architecture.md](docs/architecture.md).
+More detail: [docs/architecture.md](https://unpkg.com/opencode-simulator/docs/architecture.md).
 
 ## Notes
 
@@ -237,6 +247,12 @@ More detail: [docs/architecture.md](docs/architecture.md).
   directly, keep the panel open or hold the device.
 - `sim_delete` requires an exact name or UDID. External and panel-owned devices
   need `force: true`; deletion is destructive and removes all data.
+
+## Security
+
+Report vulnerabilities privately through the
+[security policy](https://unpkg.com/opencode-simulator/SECURITY.md).
+Do not open a public issue for a vulnerability.
 
 ## License
 
