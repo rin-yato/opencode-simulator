@@ -13,6 +13,7 @@ concurrency:
 
 permissions:
   contents: write
+  id-token: write # npm trusted publishing
 
 jobs:
   release:
@@ -30,31 +31,17 @@ jobs:
         with:
           bun-version: 1.4.0
 
+      # Trusted publishing needs npm 11.5.1 or later, which Node 22 does not ship.
+      # No registry-url: it would add a placeholder token that OIDC does not use.
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
+          node-version: 24
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Require npm token
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::Add an NPM_TOKEN repository secret with publish access to opencode-simulator."
-            exit 1
-          fi
-          if ! npm whoami; then
-            echo "::error::npm rejected NPM_TOKEN. It is invalid or expired."
-            exit 1
-          fi
-
+      # npm authenticates with OIDC, so there is no token. The filename must match
+      # the trusted publisher on npmjs.com. Private repos get no provenance.
       - name: Version and publish
-        # Provenance is not added: npm does not generate it from a private source
-        # repository. Move to npm trusted publishing when this repo is public.
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: bash scripts/release.sh
