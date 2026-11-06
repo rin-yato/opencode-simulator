@@ -47,8 +47,8 @@ jobs:
             echo "::error::Add an NPM_TOKEN repository secret with publish access to opencode-simulator."
             exit 1
           fi
-          if ! npm whoami >/dev/null 2>&1; then
-            echo "::error::NPM_TOKEN is invalid, expired, or lacks the bypass-2FA permission."
+          if ! npm whoami; then
+            echo "::error::npm rejected NPM_TOKEN. It is invalid or expired."
             exit 1
           fi
 
