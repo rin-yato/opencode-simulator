@@ -9,6 +9,8 @@ import { resolveNodeBinary } from "../node-path"
 declare const require: NodeRequire
 
 export const HUB_PACKAGE = "serve-sim"
+/** A device's first boot can take minutes; serve-sim listens only after it. */
+export const HUB_START_TIMEOUT_MS = 180_000
 const READY_TIMEOUT_MS = 420_000
 const READY_POLL_MS = 250
 
@@ -93,9 +95,9 @@ export const commandLine = (pid: number) => {
 /**
  * Wait until the hub's HTTP server answers.
  *
- * The preview page is served before the device is booted, so the panel can
- * show the simulator booting instead of a spinner. Any response means the
- * server is up; `/readyz` is what says the device itself is ready.
+ * serve-sim boots the device first and binds its port afterwards, so this
+ * waits through a first boot. Any response means the server is up; `/readyz`
+ * is what confirms which device it serves.
  */
 export async function waitForHttp(
   url: string,

@@ -5,18 +5,13 @@ import { SIMULATOR_RPC } from "../rpc"
 import { SimulatorIpc } from "./contract"
 import { DEVICE_POLL_MS, resolvePanelDevice } from "./panel-device"
 import { requestDevice, requestedDevice } from "./requests"
+import { panelTheme, resolveMode } from "./theme"
 
 interface Attached {
   readonly embed: string
   readonly key: string
   readonly device: string | undefined
 }
-
-/**
- * serve-sim's preview is a dark page. The panel keeps that look in every
- * OpenCode appearance, so the simulator never sits in a light box.
- */
-const PANEL_BACKGROUND = "#0a0a0a"
 
 export function SimulatorPanel(props: { session: MountedSession }) {
   const ctx = usePlugin()
@@ -30,6 +25,10 @@ export function SimulatorPanel(props: { session: MountedSession }) {
   const [remote, setRemote] = createSignal<{ key: string; udid: string }>()
   let attached: Attached | undefined
   let generation = 0
+
+  /** The panel follows OpenCode's color scheme, so it never sits in a mismatched box. */
+  const mode = () => resolveMode(ctx.appearance.mode())
+  const theme = () => panelTheme(mode())
 
   /** The simulator this panel shows: the window's copy, else the server's. */
   const device = () => {
@@ -58,12 +57,21 @@ export function SimulatorPanel(props: { session: MountedSession }) {
         .hub({})
         .then((found) => (found as { readonly cli?: string } | null | undefined)?.cli)
         .catch(() => undefined)
-      const result = await client.register({ key, device: target, ...(cli ? { cli } : {}) })
+      const registered = mode()
+      const result = await client.register({
+        key,
+        device: target,
+        mode: registered,
+        ...(cli ? { cli } : {}),
+      })
       if (ticket !== generation) {
         void client.close({ embed: result.embed }).catch(() => {})
         return
       }
       attached = { embed: result.embed, key, device: target }
+      // The scheme changed while the hub was starting.
+      if (mode() !== registered)
+        void client.theme({ embed: result.embed, mode: mode() }).catch(() => {})
       setEmbed(result.embed)
       setUrl(result.url)
     } catch (cause) {
@@ -126,6 +134,14 @@ export function SimulatorPanel(props: { session: MountedSession }) {
     })
   })
 
+  // The scheme can change while the panel is open. The preview page is
+  // restyled in place rather than reloaded, so the stream keeps running.
+  createEffect(() => {
+    const next = mode()
+    const current = attached
+    if (current) void client.theme({ embed: current.embed, mode: next }).catch(() => {})
+  })
+
   onMount(() => {
     const stopFailed = client.on("failed", (event) => {
       if (event.embed !== attached?.embed) return
@@ -159,7 +175,7 @@ export function SimulatorPanel(props: { session: MountedSession }) {
         width: "100%",
         height: "100%",
         "min-height": "0",
-        background: PANEL_BACKGROUND,
+        background: theme().page,
       }}
     >
       <div
@@ -171,7 +187,7 @@ export function SimulatorPanel(props: { session: MountedSession }) {
           "min-height": "0",
           "align-items": "stretch",
           "justify-content": "center",
-          background: PANEL_BACKGROUND,
+          background: theme().page,
         }}
       >
         <Show when={embed()}>
@@ -181,7 +197,7 @@ export function SimulatorPanel(props: { session: MountedSession }) {
               visible={true}
               page={url()}
               radius={8}
-              background={PANEL_BACKGROUND}
+              background={theme().page}
               class="size-full"
             />
           )}
@@ -198,8 +214,8 @@ export function SimulatorPanel(props: { session: MountedSession }) {
               gap: "12px",
               padding: "24px",
               "text-align": "center",
-              color: "#e5e5e5",
-              background: PANEL_BACKGROUND,
+              color: theme().text,
+              background: theme().page,
             }}
           >
             <Show when={loading()}>
