@@ -12,8 +12,8 @@ import { registerSettingsTools } from "./settings"
 export interface SimulatorHandle {
   /** Panel state pushed by the desktop window. */
   readonly panel: (update: PanelUpdate) => Promise<void>
-  /** The authoritative device a session currently owns. */
-  readonly device: (sessionID: string) => string | undefined
+  /** The device a session's panel should show; may take its last one back. */
+  readonly device: (sessionID: string) => Promise<string | undefined>
   dispose(): void
 }
 
@@ -172,8 +172,9 @@ export async function registerTools(
     panel: (update) => pool.panel(update),
     // The panel's device counts as the session's device: the window reports
     // what it shows, and the server re-takes the claim from that report. A
-    // panel that is still open must not look like a session without one.
-    device: (sessionID) => pool.pick(sessionID) ?? pool.panelDevice(sessionID),
+    // panel that is still open must not look like a session without one. A
+    // session whose claim ended with its turn gets its last device back.
+    device: (sessionID) => pool.resume(sessionID),
     dispose: () => {
       abort.abort()
       clearInterval(sweep)

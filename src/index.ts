@@ -67,7 +67,7 @@ export default Plugin.define({
         const data = input as { sessionID?: unknown } | undefined
         if (typeof data?.sessionID === "string") {
           const handle = simulator ?? (await simulatorReady)
-          const udid = handle.device(data.sessionID)
+          const udid = await handle.device(data.sessionID)
           return udid ? { udid } : {}
         }
         return {}
