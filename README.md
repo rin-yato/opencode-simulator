@@ -121,7 +121,7 @@ Set these under `options` on the plugin entry:
 - serve-sim must run under system Node, not Electron. If the stream says
   `Stream unavailable`, set `OPENCODE_SIMULATOR_NODE` to a Node 22+ path.
 - External simulators are never auto-claimed, auto-refreshed, or auto-shut down.
-- A released managed device shuts down after about a minute and keeps its data.
+- A released managed device shuts down after about 30 minutes and keeps its data. Opening the panel again on that session takes its last device back if no one else has it.
   Nothing is deleted automatically; use `sim_delete`.
 - The pool keeps up to five managed devices per model and runtime.
 

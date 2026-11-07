@@ -1,5 +1,5 @@
 import { Activity, type PanelState, type PanelUpdate, type ReleaseState } from "./activity"
-import { listDevices, renameDevice, type Device } from "./devices"
+import { bootDevice, listDevices, renameDevice, type Device } from "./devices"
 import type { ManagedDevice, ManagedDevices } from "./managed"
 import { inUseName } from "./names"
 import type { SessionDevices } from "./session-devices"
@@ -15,6 +15,8 @@ export interface SimulatorPoolOptions {
   readonly list?: () => Promise<readonly Device[]>
   /** Test seam. Defaults to `simctl shutdown`. */
   readonly shutdown?: (device: Device) => Promise<unknown>
+  /** Test seam. Defaults to `simctl boot`. */
+  readonly boot?: (device: Device) => Promise<unknown>
 }
 
 const MAX_LAST_DEVICES = 500
@@ -36,8 +38,11 @@ export class SimulatorPool {
   /** One rename at a time per device; claim and release can race. */
   readonly #renames = new Map<string, Promise<void>>()
   readonly #list: () => Promise<readonly Device[]>
+  readonly #boot: (device: Device) => Promise<unknown>
   /** session -> last device it held, so the next start gets the same build back. */
   readonly #last = new Map<string, string>()
+  /** Sessions that released on purpose; a panel must not take the device back. */
+  readonly #declined = new Set<string>()
   #lock: Promise<unknown> = Promise.resolve()
 
   constructor(options: SimulatorPoolOptions) {
@@ -45,6 +50,7 @@ export class SimulatorPool {
     this.managed = options.managed
     this.#renameDevice = options.rename ?? ((udid, name) => renameDevice(udid, name))
     this.#list = options.list ?? (() => listDevices())
+    this.#boot = options.boot ?? ((device) => bootDevice(device))
     this.activity = new Activity({
       sessions: options.sessions,
       onRelease: options.onRelease,
@@ -172,6 +178,41 @@ export class SimulatorPool {
     return this.#last.get(sessionID)
   }
 
+  /**
+   * The device a panel should show for this session. A claim ends with the turn,
+   * so a user who comes back later finds none; take the session's last managed
+   * device back if nobody else has it, and wake it if it was shut down.
+   */
+  async resume(sessionID: string): Promise<string | undefined> {
+    const held = this.sessions.pick(sessionID) ?? this.activity.panelDevice(sessionID)
+    if (held) return held
+    if (this.#declined.has(sessionID)) return undefined
+
+    const udid = this.#last.get(sessionID)
+    if (!udid || !this.managed.has(udid)) return undefined
+    if (this.owners(udid, sessionID).length > 0 || this.isBusy(udid, sessionID)) return undefined
+
+    let device: Device | undefined
+    try {
+      device = (await this.#list()).find((candidate) => candidate.udid === udid)
+    } catch {
+      return undefined
+    }
+    if (!device?.available) return undefined
+    // The answer can be stale by now: re-check before taking it.
+    if (this.sessions.pick(sessionID)) return this.sessions.pick(sessionID)
+    if (this.owners(udid, sessionID).length > 0 || this.isBusy(udid, sessionID)) return undefined
+    if (!(await this.claim(sessionID, udid))) return undefined
+
+    if (device.state !== "Booted") {
+      // The panel shows the device booting; do not make the poll wait for it.
+      void this.#boot(device).catch((cause) => {
+        console.warn("opencode-simulator: could not wake a resumed simulator", cause)
+      })
+    }
+    return udid
+  }
+
   /** A boot failed: give the device up so the next start does not retry it. */
   async failed(sessionID: string, udid: string): Promise<void> {
     await this.releaseManual(sessionID, udid)
@@ -186,6 +227,7 @@ export class SimulatorPool {
   }
 
   async #took(sessionID: string, udid: string, previous: string | undefined): Promise<void> {
+    this.#declined.delete(sessionID)
     this.#last.delete(sessionID)
     this.#last.set(sessionID, udid)
     while (this.#last.size > MAX_LAST_DEVICES) {
@@ -233,8 +275,17 @@ export class SimulatorPool {
     return owners
   }
 
-  releaseManual(sessionID: string, expectedUdid?: string): Promise<string | undefined> {
-    return this.activity.releaseManual(sessionID, expectedUdid)
+  async releaseManual(sessionID: string, expectedUdid?: string): Promise<string | undefined> {
+    const udid = await this.activity.releaseManual(sessionID, expectedUdid)
+    if (udid) {
+      this.#declined.add(sessionID)
+      while (this.#declined.size > MAX_LAST_DEVICES) {
+        const oldest = this.#declined.values().next().value
+        if (oldest === undefined) break
+        this.#declined.delete(oldest)
+      }
+    }
+    return udid
   }
 
   panel(update: PanelUpdate): Promise<void> {

@@ -52,7 +52,8 @@ creates one.
 
 The claim ends with your turn unless the panel is open or you passed `hold` or
 `holdMinutes`. After that, tools say no simulator is assigned. `sim_start()` gets the
-same device back if it is still free. Apps and data survive. Call `sim_release` when
+same device back if it is still free. Apps and data survive, and the device stays booted
+for about 30 minutes. The user reopening the panel gets it back too. Call `sim_release` when
 done with a hold.
 
 Nothing is deleted automatically. Do not delete the user's own simulators unless asked.

@@ -45,7 +45,8 @@ export interface ActivityOptions {
   readonly shouldShutdown?: (udid: string) => boolean
 }
 
-const DEFAULT_SHUTDOWN_DELAY_MS = 60_000
+/** Long enough to come back to a finished session and still find the app running. */
+const DEFAULT_SHUTDOWN_DELAY_MS = 30 * 60_000
 const DEFAULT_PANEL_TTL_MS = 30_000
 
 const STATE_RANK: Record<PanelState, number> = {
