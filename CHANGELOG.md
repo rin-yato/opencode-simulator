@@ -1,5 +1,11 @@
 # opencode-simulator
 
+## 0.2.3
+
+### Patch Changes
+
+- Automated patch release.
+
 ## 0.2.2
 
 ### Patch Changes
