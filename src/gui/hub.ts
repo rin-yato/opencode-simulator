@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { homedir } from "node:os"
 import { Schema } from "effect"
 import type { MainContext } from "@opencode/plugin/gui/main"
+import { buildHubArgs, buildHubEnv, lineBuffer, parseStartupPhase } from "./hub-args"
 import {
   HUB_PACKAGE,
   commandLine,
@@ -12,20 +13,15 @@ import {
   stopChild,
   waitForHttp,
   waitForReady,
+  HUB_START_TIMEOUT_MS,
 } from "./serve-sim"
 import { resolveStreamOptions, type StreamTransport } from "./stream-options"
 
 const RESTART_BASE_MS = 1_000
 const RESTART_MAX_MS = 30_000
 const RESTART_RESET_MS = 60_000
-
-/**
- * serve-sim's preview client falls back to Google's public STUN servers when
- * the server sends no ICE servers. The hub only streams over loopback, so give
- * it a loopback STUN address instead: the client gets a non-empty list, never
- * contacts a public server, and host candidates still connect directly.
- */
-const LOOPBACK_STUN = "stun:127.0.0.1:3478"
+/** Startup phases faster than this are not worth a log line. */
+const SLOW_PHASE_MS = 1_000
 
 const HubState = Schema.Struct({
   pid: Schema.Int,
@@ -198,36 +194,13 @@ export function createHubManager(ctx: MainContext): HubManager {
     }
 
     const port = await reservePort()
-    const args = [
-      ...cli.args,
-      "--host",
-      "127.0.0.1",
-      "--port",
-      String(port),
-      // Locked to the requested device: without this serve-sim streams
-      // whichever simulator booted first.
-      "--single-device",
-      slot.device,
-      "--transport",
+    const args = buildHubArgs({
+      cliArgs: cli.args,
+      port,
+      device: slot.device,
       transport,
-      "--max-dimension",
-      String(stream.maxDimension),
-    ]
-    if (transport === "webrtc") {
-      // H.264 uses VideoToolbox on macOS. The bitrate is a ceiling: WebRTC
-      // backs off when the simulator is idle. The loopback STUN keeps the
-      // preview client from falling back to Google's public STUN servers.
-      args.push(
-        "--webrtc-codec",
-        "h264",
-        "--stun-url",
-        LOOPBACK_STUN,
-        "--video-bitrate",
-        String(stream.bitrate),
-        "--video-fps",
-        String(stream.fps),
-      )
-    }
+      stream,
+    })
 
     ctx.log.write("info", "Starting simulator hub", {
       device: slot.device,
@@ -239,7 +212,7 @@ export function createHubManager(ctx: MainContext): HubManager {
 
     const child = spawn(cli.command, args, {
       cwd: homedir(),
-      env: cli.env,
+      env: buildHubEnv(cli.env),
       stdio: ["ignore", "pipe", "pipe"],
       detached: false,
     })
@@ -249,14 +222,32 @@ export function createHubManager(ctx: MainContext): HubManager {
     slot.startedAt = Date.now()
     persist()
 
-    child.stdout?.on("data", (chunk: Buffer) => {
-      const output = chunk.toString().trim()
-      if (output) ctx.log.write("debug", "simulator hub output", { device: slot.device, output })
-    })
-    child.stderr?.on("data", (chunk: Buffer) => {
-      const output = chunk.toString().trim()
-      if (output) ctx.log.write("warn", "simulator hub stderr", { device: slot.device, output })
-    })
+    const spawnedAt = Date.now()
+    // serve-sim prints `[startup] {...}` lines while it boots the device. They
+    // show where a slow start spends its time, so keep the slow ones.
+    const onLine = (stream: "stdout" | "stderr") => (line: string) => {
+      const phase = parseStartupPhase(line)
+      if (phase) {
+        if (phase.status === "complete" && (phase.durationMs ?? 0) >= SLOW_PHASE_MS) {
+          ctx.log.write("info", "simulator hub startup phase", {
+            device: slot.device,
+            phase: phase.phase,
+            durationMs: phase.durationMs,
+          })
+        }
+        return
+      }
+      ctx.log.write(stream === "stderr" ? "warn" : "debug", `simulator hub ${stream}`, {
+        device: slot.device,
+        output: line,
+      })
+    }
+    const readStdout = lineBuffer(onLine("stdout"))
+    const readStderr = lineBuffer(onLine("stderr"))
+    child.stdout?.setEncoding("utf8")
+    child.stderr?.setEncoding("utf8")
+    child.stdout?.on("data", readStdout)
+    child.stderr?.on("data", readStderr)
 
     child.once("error", (cause) => {
       ctx.log.write("error", "simulator hub failed to start", {
@@ -290,10 +281,15 @@ export function createHubManager(ctx: MainContext): HubManager {
       })
     })
     try {
-      // The preview page answers before the device is booted. Waiting for the
-      // port instead of for the device lets the panel show the simulator
-      // booting rather than a spinner.
-      await Promise.race([waitForHttp(url, slot.abort.signal), exited, failed])
+      // serve-sim only starts listening once the device is booted, and a
+      // device's first boot takes well over half a minute. Wait for as long as
+      // the process lives: a dead process ends the wait through `exited` and
+      // `failed`, so a long timeout only matters for a hung one.
+      await Promise.race([
+        waitForHttp(url, slot.abort.signal, HUB_START_TIMEOUT_MS),
+        exited,
+        failed,
+      ])
     } catch (cause) {
       await stopSlotChild(slot, child).catch(() => {})
       throw cause
@@ -305,6 +301,11 @@ export function createHubManager(ctx: MainContext): HubManager {
     }
 
     slot.url = url
+    ctx.log.write("info", "Simulator hub is up", {
+      device: slot.device,
+      transport,
+      startMs: Date.now() - spawnedAt,
+    })
     if (!keepSimulatorVisible) hideSimulatorWindow(ctx)
     for (const listener of startedListeners) listener({ device: slot.device, url })
     // The device can still be booting. Watch it in the background: one that

@@ -7,6 +7,7 @@ import {
 import type { Embed, Plugin } from "@opencode/plugin/gui/main"
 import { SimulatorIpc } from "./contract"
 import { createHubManager } from "./hub"
+import { panelTheme, previewThemeCss, resolveMode, type PanelMode } from "./theme"
 
 interface Pane {
   readonly windowId: number
@@ -17,15 +18,16 @@ interface Pane {
   url: string
   readonly view: WebContentsView
   readonly embed: Embed
+  /** The color scheme the preview shows. */
+  mode: PanelMode
+  /** The theme stylesheet currently injected, so the next one can replace it. */
+  themeKey: string | undefined
 }
 
 const paneId = (windowId: number, sessionKey: string) => `${windowId}\u0000${sessionKey}`
 
 /** How long a hub lives after its last panel closes, so reopening is instant. */
 const RELEASE_IDLE_MS = 30_000
-
-/** serve-sim's preview is a dark page; the panel keeps that look. */
-const PREVIEW_BACKGROUND = "#0a0a0a"
 
 /**
  * Load the preview page.
@@ -47,6 +49,22 @@ const loadPreview = async (contents: WebContents, url: string): Promise<void> =>
     }
   }
   throw last
+}
+
+/**
+ * Paint the preview in the panel's color scheme. The stylesheet belongs to the
+ * current document, so a page that navigates needs it again; the previous one
+ * is removed first so repeated calls never stack.
+ */
+const applyTheme = async (pane: Pane): Promise<void> => {
+  const contents = pane.view.webContents
+  if (contents.isDestroyed()) return
+  pane.view.setBackgroundColor(panelTheme(pane.mode).page)
+  const previous = pane.themeKey
+  pane.themeKey = undefined
+  if (previous) await contents.removeInsertedCSS(previous).catch(() => {})
+  if (contents.isDestroyed() || !contents.getURL()) return
+  pane.themeKey = await contents.insertCSS(previewThemeCss(pane.mode))
 }
 
 const setup: Plugin.MainSetup = (ctx) => {
@@ -103,6 +121,10 @@ const setup: Plugin.MainSetup = (ctx) => {
       const id = paneId(caller.window, input.key)
       const existing = panes.get(id)
       if (existing && existing.device === input.device) {
+        if (input.mode && input.mode !== existing.mode) {
+          existing.mode = input.mode
+          void applyTheme(existing).catch(() => {})
+        }
         return { embed: existing.embed.id, url: existing.url }
       }
       // The session asked for another simulator: drop the old view and attach a
@@ -125,7 +147,8 @@ const setup: Plugin.MainSetup = (ctx) => {
           session: simulatorSession,
         },
       })
-      view.setBackgroundColor(PREVIEW_BACKGROUND)
+      const mode = resolveMode(input.mode)
+      view.setBackgroundColor(panelTheme(mode).page)
       view.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
       const allowedOrigin = new URL(url).origin
       const allowNavigation = (target: string): boolean => {
@@ -150,10 +173,16 @@ const setup: Plugin.MainSetup = (ctx) => {
         url,
         view,
         embed,
+        mode,
+        themeKey: undefined,
       }
       panes.set(id, pane)
       byEmbed.set(embed.id, pane)
 
+      // A new document drops the injected stylesheet, so theme every load.
+      view.webContents.on("did-finish-load", () => {
+        void applyTheme(pane).catch(() => {})
+      })
       view.webContents.on("did-fail-load", (_event, code, description, _url, isMainFrame) => {
         if (!isMainFrame || code === -3) return
         provider.emit("failed", { embed: embed.id, detail: `${description} (${code})` })
@@ -173,6 +202,13 @@ const setup: Plugin.MainSetup = (ctx) => {
       }
       embed.show(true)
       return { embed: embed.id, url }
+    },
+
+    theme: async (input, caller) => {
+      const pane = byEmbed.get(input.embed)
+      if (!pane || pane.windowId !== caller.window || pane.mode === input.mode) return
+      pane.mode = input.mode
+      await applyTheme(pane).catch(() => {})
     },
 
     close: (input, caller) => {

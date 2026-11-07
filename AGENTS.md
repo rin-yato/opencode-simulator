@@ -45,6 +45,9 @@ Every push to `main` runs `.github/workflows/release.yml`. It consumes pending c
 - Tool descriptions and `src/skills/simulator.md` are the agent-facing API. Update them when behavior changes.
 - No telemetry or outbound requests. serve-sim binds to loopback only.
 - serve-sim must run under system Node, never Electron. Its native addon is signed by Expo.
+- The hub command line is built in `src/gui/hub-args.ts`. serve-sim binds its port only after the device has booted, so the start wait (`HUB_START_TIMEOUT_MS`) must outlast a first boot; a short one kills the hub mid-boot and falls back to HTTP.
+- The preview is themed by one CSS variable, `--color-page`, injected from GUI main. Do not recolor serve-sim's panel variables: its controls are white-on-dark and vanish on a light surface.
+- Hub CPU did not change with `--max-dimension` in measurement (hardware H.264), so the default stays native.
 
 ## Verify
 

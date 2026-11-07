@@ -15,10 +15,18 @@ export const SimulatorIpc = Ipc.define({
         device: Schema.String,
         /** The serve-sim CLI the server found; main cannot resolve it itself. */
         cli: Schema.optional(Schema.String),
+        /** OpenCode's color scheme, so the preview loads in it. */
+        mode: Schema.optional(Schema.Literals(["light", "dark"])),
       }),
       output: Schema.Struct({
         embed: Schema.String,
         url: Schema.String,
+      }),
+    },
+    theme: {
+      input: Schema.Struct({
+        embed: Schema.String,
+        mode: Schema.Literals(["light", "dark"]),
       }),
     },
     close: {

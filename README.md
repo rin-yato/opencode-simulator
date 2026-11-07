@@ -18,7 +18,7 @@
 The iOS Simulator streams into a side tab in OpenCode Desktop. You can tap, type,
 and rotate it by hand, and your agent can drive it with `sim_*` tools.
 
-- **Live panel.** WebRTC H.264 stream, with an HTTP fallback.
+- **Live panel.** WebRTC H.264 stream, with an HTTP fallback. Follows OpenCode's light and dark scheme.
 - **Agent tools.** Device lifecycle, apps, accessibility reads, input, settings, screenshots.
 - **Per session.** Each session gets its own simulator, and the panel opens in the session that called the tool.
 - **Managed pool.** The plugin creates and reuses its own simulators. Yours are never touched unless you name them.
@@ -120,6 +120,7 @@ Set these under `options` on the plugin entry:
 
 - serve-sim must run under system Node, not Electron. If the stream says
   `Stream unavailable`, set `OPENCODE_SIMULATOR_NODE` to a Node 22+ path.
+- A device's first boot can take a couple of minutes. The panel waits for it and keeps the WebRTC stream. Slow startup phases are in the plugin log.
 - External simulators are never auto-claimed, auto-refreshed, or auto-shut down.
 - A released managed device shuts down after about 30 minutes and keeps its data. Opening the panel again on that session takes its last device back if no one else has it.
   Nothing is deleted automatically; use `sim_delete`.
