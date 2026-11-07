@@ -105,9 +105,7 @@ export function SimulatorPanel(props: { session: MountedSession }) {
       if (cancelled) return
       try {
         const result = (await rpc.device({ sessionID: props.session.id })) as
-          | { readonly udid?: string }
-          | null
-          | undefined
+          { readonly udid?: string } | null | undefined
         if (cancelled) return
         if (result?.udid) {
           setRemote({ key, udid: result.udid })

@@ -318,11 +318,7 @@ export function createHubManager(ctx: MainContext): HubManager {
    * case where WebRTC is retried over HTTP, because the panel is already
    * showing the preview page.
    */
-  const watchReady = async (
-    slot: Slot,
-    transport: StreamTransport,
-    url: string,
-  ): Promise<void> => {
+  const watchReady = async (slot: Slot, transport: StreamTransport, url: string): Promise<void> => {
     try {
       await waitForReady(url, slot.device, slot.abort.signal)
     } catch (cause) {
@@ -384,7 +380,8 @@ export function createHubManager(ctx: MainContext): HubManager {
         if (slot.released || stopped || !startupRace) {
           throw cause
         }
-        const retry = transport === "webrtc" ? fallbackToHttp(slot, message) : restart(slot, transport)
+        const retry =
+          transport === "webrtc" ? fallbackToHttp(slot, message) : restart(slot, transport)
         return retry.then(() => {
           const url = slot.url
           if (!url) throw cause
