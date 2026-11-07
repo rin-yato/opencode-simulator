@@ -41,6 +41,23 @@ export const SIMULATOR_RPC = {
         additionalProperties: false,
       },
     },
+    /**
+     * Where the server found the serve-sim CLI. The window's main process runs
+     * the plugin bundle with a stub `require` that cannot resolve packages, so
+     * it asks the server, which loads from the real install directory.
+     */
+    hub: {
+      input: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      output: {
+        type: "object",
+        properties: { cli: { type: "string" } },
+        additionalProperties: false,
+      },
+    },
     panel: {
       input: {
         type: "object",
