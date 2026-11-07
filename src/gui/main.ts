@@ -115,7 +115,7 @@ const setup: Plugin.MainSetup = (ctx) => {
       // The panel wants this device again: cancel any pending idle release before
       // the hub starts, so a timer cannot abort a start that is already underway.
       cancelRelease(input.device)
-      const { url } = await hub.ensure(input.device)
+      const { url } = await hub.ensure(input.device, input.cli)
 
       const view = new WebContentsView({
         webPreferences: {

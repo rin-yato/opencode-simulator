@@ -13,6 +13,8 @@ export const SimulatorIpc = Ipc.define({
         key: Schema.String,
         /** The simulator to stream. Required: never stream whichever device is booted. */
         device: Schema.String,
+        /** The serve-sim CLI the server found; main cannot resolve it itself. */
+        cli: Schema.optional(Schema.String),
       }),
       output: Schema.Struct({
         embed: Schema.String,

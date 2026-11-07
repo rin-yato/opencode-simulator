@@ -52,7 +52,13 @@ export function SimulatorPanel(props: { session: MountedSession }) {
     setLoading(true)
     setError(undefined)
     try {
-      const result = await client.register({ key, device: target })
+      // Main cannot resolve packages itself, so pass along where the server
+      // found the CLI. A server without the answer leaves main to its own lookup.
+      const cli = await rpc
+        .hub({})
+        .then((found) => (found as { readonly cli?: string } | null | undefined)?.cli)
+        .catch(() => undefined)
+      const result = await client.register({ key, device: target, ...(cli ? { cli } : {}) })
       if (ticket !== generation) {
         void client.close({ embed: result.embed }).catch(() => {})
         return

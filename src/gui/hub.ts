@@ -49,7 +49,7 @@ export interface HubManager {
    * process locked with `--single-device`, so the preview can never stream a
    * different booted simulator.
    */
-  readonly ensure: (device: string) => Promise<{ readonly url: string }>
+  readonly ensure: (device: string, cli?: string) => Promise<{ readonly url: string }>
   readonly onStarted: (listener: (started: HubStarted) => void) => () => void
   /** Stop the hub for one device. No-op when it never started. */
   readonly release: (device: string) => Promise<void>
@@ -102,6 +102,12 @@ export function createHubManager(ctx: MainContext): HubManager {
   const explicitCli =
     process.env.OPENCODE_SIMULATOR_HUB ??
     (typeof ctx.options.hubCli === "string" ? ctx.options.hubCli : undefined)
+  /**
+   * The CLI path the server found. This bundle runs with a stub `require` that
+   * resolves no packages, so without it a plain install finds nothing.
+   */
+  let discoveredCli: string | undefined
+  const cliPath = () => explicitCli ?? discoveredCli
   const keepSimulatorVisible =
     process.env.OPENCODE_SIMULATOR_SHOW_SIMULATOR === "1" || ctx.options.showSimulator === true
   const stream = resolveStreamOptions(ctx.options)
@@ -114,7 +120,7 @@ export function createHubManager(ctx: MainContext): HubManager {
     const entries: HubState[] = []
     for (const slot of slots.values()) {
       if (!slot.child?.pid || !slot.port) continue
-      const cli = resolveCli(explicitCli)
+      const cli = resolveCli(cliPath())
       entries.push({
         pid: slot.child.pid,
         port: slot.port,
@@ -184,7 +190,7 @@ export function createHubManager(ctx: MainContext): HubManager {
     transport: StreamTransport,
   ): Promise<{ readonly url: string }> => {
     if (slot.released) throw new Error("The simulator hub was released.")
-    const cli = resolveCli(explicitCli)
+    const cli = resolveCli(cliPath())
     if (!cli) {
       throw new Error(
         "serve-sim CLI not found. Install dependencies, or set options.hubCli or OPENCODE_SIMULATOR_HUB.",
@@ -396,7 +402,8 @@ export function createHubManager(ctx: MainContext): HubManager {
     return slot.starting
   }
 
-  const ensure = async (device: string) => {
+  const ensure = async (device: string, cli?: string) => {
+    if (cli) discoveredCli = cli
     const key = device
     const existing = slots.get(key)
     if (existing?.releasing) await existing.releasing.catch(() => {})

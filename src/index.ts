@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url"
 import { Plugin, Skill } from "@opencode/plugin"
 import { SIMULATOR_RPC } from "./rpc"
 import { isPanelState } from "./server/activity"
+import { resolveServeSim } from "./server/serve-sim"
 import { registerTools, type SimulatorHandle } from "./server/tools/index"
 import { parseSkillFile } from "./skills/frontmatter"
 
@@ -70,6 +71,10 @@ export default Plugin.define({
           return udid ? { udid } : {}
         }
         return {}
+      },
+      hub: async () => {
+        const cli = resolveServeSim({ hubCli: ctx.options.hubCli })
+        return cli ? { cli } : {}
       },
       panel: async (input) => {
         const data = input as
