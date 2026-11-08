@@ -342,12 +342,6 @@ export class Activity {
     return false
   }
 
-  /** End a hold. The claim stays and the device may wind down. */
-  async unhold(sessionID: string): Promise<void> {
-    if (!this.#holds.delete(sessionID)) return
-    await this.#settle(sessionID)
-  }
-
   /**
    * Take the device from sessions that only keep it idle. Returns false when
    * one of them still needs it (running, panel open, or held).

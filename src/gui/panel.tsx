@@ -41,12 +41,13 @@ export function SimulatorPanel(props: { session: MountedSession }) {
     if (attached && attached.key === key && attached.device === target) return
     const ticket = ++generation
     if (attached) {
-      // Moving to another session or simulator: drop the old view before the
-      // new one lands, so a hidden preview cannot keep a capture running.
+      // Moving to another simulator: drop the old view before the new one
+      // lands. Moving to another session only parks it, so coming back is instant.
       const previous = attached
       attached = undefined
       setEmbed(undefined)
-      void client.close({ embed: previous.embed }).catch(() => {})
+      const gone = { embed: previous.embed }
+      void (previous.key === key ? client.close(gone) : client.detach(gone)).catch(() => {})
     }
     setLoading(true)
     setError(undefined)

@@ -159,6 +159,16 @@ describe("allocate", () => {
     expect(created).toHaveLength(2)
   })
 
+  test("starting a simulator after sim_idle in the same turn makes it active again", async () => {
+    const { pool, deps } = setup([device("iPhone 17 Pro")])
+    pool.started("a")
+    await allocate(pool, { sessionID: "a" }, deps)
+    await pool.markIdle("a")
+    expect(pool.isBusy(pool.pick("a")!, "b")).toBe(false)
+    await allocate(pool, { sessionID: "a" }, deps)
+    expect(pool.isBusy(pool.pick("a")!, "b")).toBe(true)
+  })
+
   test("takes an idle booted device before waking a shut down one", async () => {
     const { pool, deps, devices } = setup([device("iPhone 17 Pro")])
     const sleeping = device("iPhone 17 Pro 1")

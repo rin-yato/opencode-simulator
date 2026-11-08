@@ -84,6 +84,8 @@ export async function allocate(
   deps: AllocateDeps = defaults,
 ): Promise<Allocation> {
   const result = await choose(pool, request, deps)
+  // Starting a simulator is using it, even right after sim_idle in one turn.
+  pool.engage(request.sessionID)
   if (request.hold) pool.hold(request.sessionID, request.holdMs)
   return result
 }

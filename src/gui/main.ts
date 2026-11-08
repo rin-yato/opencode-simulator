@@ -122,7 +122,9 @@ const setup: Plugin.MainSetup = (ctx) => {
 
   const disposePane = (pane: Pane) => {
     parking.unpark(pane.embed.id)
-    panes.delete(paneId(pane.windowId, pane.sessionKey))
+    const id = paneId(pane.windowId, pane.sessionKey)
+    // A newer pane for the same session may already have taken the slot.
+    if (panes.get(id) === pane) panes.delete(id)
     byEmbed.delete(pane.embed.id)
     pane.embed.dispose()
     try {
