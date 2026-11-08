@@ -70,7 +70,7 @@ interface StartInput {
   readonly holdMinutes?: number
 }
 
-interface ReleaseInput {
+interface IdleInput {
   readonly udid?: string
 }
 
@@ -117,7 +117,7 @@ const HOLD_SCHEMA = {
   type: "boolean",
   default: false,
   description:
-    "Pin the device against takeover by other sessions and shutdown, until sim_release or session close.",
+    "Pin the device against takeover by other sessions and shutdown, until sim_idle or session close.",
 } as const
 
 const HOLD_MINUTES_SCHEMA = {
@@ -600,25 +600,25 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
   })
 
   editor.add({
-    name: "release",
+    name: "idle",
     description:
-      "End a hold on this session's simulator. The session keeps the device, idle, so the user can keep testing; another session can take it when it needs one. Do not call this when you finish a task.",
+      "Call this when you are done with the simulator for now, for example when your task is finished. It marks the device idle (its name ends with ` · idle`) and ends any hold. This session keeps it, so the user can keep testing, and another session can take it over when it needs one. Using the simulator again makes it active.",
     input: {
       type: "object",
       properties: {
         udid: {
           type: "string",
-          description: "Optional exact device to release. Defaults to this session's device.",
+          description: "Optional exact device. Defaults to this session's device.",
         },
       },
       additionalProperties: false,
     },
     options: SIM_OPTIONS,
-    execute: define(async (input: ReleaseInput, context: ToolRuntime) => {
+    execute: define(async (input: IdleInput, context: ToolRuntime) => {
       const expected = input.udid?.trim() ? (await resolveDevice(input.udid)).udid : undefined
-      const released = await simulator.pool.releaseSoft(context.sessionID, expected)
+      const released = await simulator.pool.markIdle(context.sessionID, expected)
       if (!released) {
-        throw new Error("This session has no simulator to release.")
+        throw new Error("This session has no simulator to mark idle.")
       }
       return ok(`${released} is idle; this session keeps it until another session needs it`, {
         udid: released,

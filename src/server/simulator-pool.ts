@@ -1,7 +1,7 @@
 import { Activity, type PanelState, type PanelUpdate, type ReleaseState } from "./activity"
 import { bootDevice, listDevices, renameDevice, type Device } from "./devices"
 import type { ManagedDevice, ManagedDevices } from "./managed"
-import { inUseName } from "./names"
+import { idleName, inUseName } from "./names"
 import type { SessionDevices } from "./session-devices"
 
 export interface SimulatorPoolOptions {
@@ -87,15 +87,22 @@ export class SimulatorPool {
   }
 
   /**
-   * Reflect use in the device's name: `<model> N · in use` while a turn, a
-   * panel, or a hold uses it, the plain name otherwise. Only managed devices are
+   * Reflect use in the device's name: `<model> N · in use` while an agent works
+   * on it, `· idle` while a session only keeps it, the plain name otherwise. Only managed devices are
    * renamed, and the name stays cosmetic — the pool still keys on the UDID.
    */
   async syncName(udid: string): Promise<void> {
+    const wanted = this.#wantedName(udid)
+    if (wanted) await this.#rename(udid, wanted)
+  }
+
+  /** ` · in use` while an agent works on it, ` · idle` while kept for later, else plain. */
+  #wantedName(udid: string): string | undefined {
     const base = this.managed.get(udid)?.name
-    if (!base) return
-    const busy = this.isBusy(udid)
-    await this.#rename(udid, busy ? inUseName(base) : base)
+    if (!base) return undefined
+    if (this.activity.isActive(udid)) return inUseName(base)
+    if (this.owners(udid).length > 0 || this.isBusy(udid)) return idleName(base)
+    return base
   }
 
   /**
@@ -127,10 +134,8 @@ export class SimulatorPool {
     }
     for (const udid of stale) await this.forgetDevice(udid)
     for (const device of devices) {
-      const base = this.managed.get(device.udid)?.name
-      if (!base) continue
-      const busy = this.isBusy(device.udid)
-      const wanted = busy ? inUseName(base) : base
+      const wanted = this.#wantedName(device.udid)
+      if (!wanted) continue
       if (device.name === wanted) {
         this.#applied.set(device.udid, wanted)
         continue
@@ -299,15 +304,20 @@ export class SimulatorPool {
   }
 
   /**
-   * The agent is done with its device. The session keeps it, idle, for the user
-   * to keep testing; another session may take it over when it needs one.
-   * Only ends a hold. Never clears the panel.
+   * The agent is done with its device for now. The session keeps it, idle, for
+   * the user to keep testing; another session may take it over when it needs
+   * one. Ends a hold. Never clears the panel.
    */
-  async releaseSoft(sessionID: string, expectedUdid?: string): Promise<string | undefined> {
+  async markIdle(sessionID: string, expectedUdid?: string): Promise<string | undefined> {
     const udid = this.sessions.pick(sessionID)
     if (!udid || (expectedUdid && udid !== expectedUdid)) return undefined
-    await this.activity.unhold(sessionID)
+    await this.activity.yield(sessionID)
     return udid
+  }
+
+  /** The agent is using its device again. */
+  engage(sessionID: string): void {
+    this.activity.engage(sessionID)
   }
 
   async releaseManual(sessionID: string, expectedUdid?: string): Promise<string | undefined> {

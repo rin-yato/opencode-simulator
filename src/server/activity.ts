@@ -76,6 +76,8 @@ export class Activity {
   readonly #shouldShutdown: (udid: string) => boolean
   readonly #panels = new Map<string, PanelEntry>()
   readonly #running = new Set<string>()
+  /** Running sessions that said they are done with the simulator for now. */
+  readonly #yielded = new Set<string>()
   /** sessionID -> expiry; undefined means held until an explicit release. */
   readonly #holds = new Map<string, number | undefined>()
   readonly #deleted = new Set<string>()
@@ -149,13 +151,36 @@ export class Activity {
   /** The agent started a turn; its device must not be released mid-work. */
   started(sessionID: string): void {
     this.#running.add(sessionID)
+    this.#yielded.delete(sessionID)
     const udid = this.#sessions.pick(sessionID)
-    if (udid) this.#cancelShutdown(udid)
+    if (!udid) return
+    this.#cancelShutdown(udid)
+    void this.#onChange?.(udid)
+  }
+
+  /** The agent is using the simulator again after saying it was done. */
+  engage(sessionID: string): void {
+    if (!this.#yielded.delete(sessionID)) return
+    const udid = this.#sessions.pick(sessionID)
+    if (!udid) return
+    this.#cancelShutdown(udid)
+    void this.#onChange?.(udid)
+  }
+
+  /**
+   * The agent is done with the simulator for now, possibly mid-turn. It keeps
+   * the claim but stops protecting the device; using it again engages it.
+   */
+  async yield(sessionID: string): Promise<void> {
+    this.#holds.delete(sessionID)
+    this.#yielded.add(sessionID)
+    await this.#settle(sessionID)
   }
 
   /** The agent finished a turn. The session keeps its device, now idle. */
   async idle(sessionID: string): Promise<void> {
     this.#running.delete(sessionID)
+    this.#yielded.delete(sessionID)
     await this.#settle(sessionID)
   }
 
@@ -163,6 +188,7 @@ export class Activity {
   async close(sessionID: string): Promise<void> {
     this.#deletePanelsForSession(sessionID)
     this.#running.delete(sessionID)
+    this.#yielded.delete(sessionID)
     this.#holds.delete(sessionID)
     await this.#forget(sessionID)
   }
@@ -170,8 +196,11 @@ export class Activity {
   /** Pin the session's device: no takeover and no shutdown until released or expired. */
   hold(sessionID: string, ttlMs?: number): void {
     this.#holds.set(sessionID, ttlMs && ttlMs > 0 ? Date.now() + ttlMs : undefined)
+    this.#yielded.delete(sessionID)
     const udid = this.#sessions.pick(sessionID)
-    if (udid) this.#cancelShutdown(udid)
+    if (!udid) return
+    this.#cancelShutdown(udid)
+    void this.#onChange?.(udid)
   }
 
   /**
@@ -262,12 +291,29 @@ export class Activity {
   releaseState(sessionID: string): ReleaseState {
     if (this.isHeld(sessionID)) return "held"
     if (this.panelState(sessionID) !== "closed") return "panel"
-    if (this.#sessions.pick(sessionID) && this.#running.has(sessionID)) return "turn"
+    if (this.#sessions.pick(sessionID) && this.isWorking(sessionID)) return "turn"
     return "idle"
   }
 
   isRunning(sessionID: string): boolean {
     return this.#running.has(sessionID)
+  }
+
+  /** Running, and has not said it is done with the simulator. */
+  isWorking(sessionID: string): boolean {
+    return this.#running.has(sessionID) && !this.#yielded.has(sessionID)
+  }
+
+  /**
+   * Is an agent working on this device right now (a turn that has not yielded,
+   * or a hold)? This is what the " · in use" name shows; an open panel alone
+   * is not agent activity.
+   */
+  isActive(udid: string): boolean {
+    for (const sessionID of this.#sessions.owners(udid)) {
+      if (this.isWorking(sessionID) || this.isHeld(sessionID)) return true
+    }
+    return false
   }
 
   isHeld(sessionID: string, now = Date.now()): boolean {
@@ -286,19 +332,14 @@ export class Activity {
       if (panel.sessionID !== except && panel.udid === udid) return true
     }
     for (const sessionID of this.#running) {
-      if (sessionID !== except && this.#sessions.pick(sessionID) === udid) return true
+      if (sessionID === except || this.#yielded.has(sessionID)) continue
+      if (this.#sessions.pick(sessionID) === udid) return true
     }
     for (const sessionID of this.#holds.keys()) {
       if (sessionID !== except && this.isHeld(sessionID) && this.#sessions.pick(sessionID) === udid)
         return true
     }
     return false
-  }
-
-  /** End a hold. The claim stays and the device may wind down. */
-  async unhold(sessionID: string): Promise<void> {
-    if (!this.#holds.delete(sessionID)) return
-    await this.#settle(sessionID)
   }
 
   /**

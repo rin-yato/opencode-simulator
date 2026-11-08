@@ -78,11 +78,11 @@ sim_wait({ text: "Products" })
 
 Two sessions get two simulators, so they never share a screen. A device stays with
 a session while its panel is open or its turn is running. To keep one across
-turns, pass `hold` or `holdMinutes`; `sim_release` ends it.
+turns, pass `hold` or `holdMinutes`; `sim_idle` ends it.
 
 ```text
 sim_start({ app: "com.example.app", holdMinutes: 30 })
-sim_release()
+sim_idle()
 ```
 
 - `from: "iPhone 17 Pro"` picks the model and gives you a managed device of it.
@@ -110,7 +110,7 @@ Set these under `options` on the plugin entry:
 
 | Tools | What they do |
 |---|---|
-| `sim_devices` `sim_boot` `sim_start` `sim_create` `sim_delete` `sim_release` | Device lifecycle and pool ownership |
+| `sim_devices` `sim_boot` `sim_start` `sim_create` `sim_delete` `sim_idle` | Device lifecycle and pool ownership |
 | `sim_install` `sim_apps` `sim_uninstall` `sim_erase` `sim_launch` | App lifecycle |
 | `sim_status` `sim_ui` `sim_wait` `sim_screenshot` | Inspect the screen |
 | `sim_tap` `sim_scroll` `sim_type` `sim_button` `sim_rotate` | Input and gestures |
@@ -121,8 +121,9 @@ Set these under `options` on the plugin entry:
 - serve-sim must run under system Node, not Electron. If the stream says
   `Stream unavailable`, set `OPENCODE_SIMULATOR_NODE` to a Node 22+ path.
 - A device's first boot can take a couple of minutes. The panel waits for it and keeps the WebRTC stream. Slow startup phases are in the plugin log.
+- Leaving the panel (another tab or session) keeps its stream running, hidden, for up to 10 minutes, so coming back does not reload it. At most four panels are kept this way.
 - External simulators are never auto-claimed, auto-refreshed, or auto-shut down.
-- A session keeps its managed device after its turn ends or its panel closes, so you can keep testing. An unused device shuts down after about 30 minutes, keeps its data, and wakes when the panel reopens. Another session that needs a simulator takes an idle one over (a running turn, an open panel, or a hold protects it) before a new one is created.
+- Managed devices are named `<model> N · in use` while an agent works on them and `<model> N · idle` while a session only keeps them. A session keeps its managed device after its turn ends or its panel closes, so you can keep testing. An unused device shuts down after about 30 minutes, keeps its data, and wakes when the panel reopens. Another session that needs a simulator takes an idle one over (a running turn, an open panel, or a hold protects it) before a new one is created.
   Nothing is deleted automatically; use `sim_delete`.
 - The pool keeps up to five managed devices per model and runtime.
 
