@@ -160,11 +160,14 @@ export function SimulatorPanel(props: { session: MountedSession }) {
     onCleanup(stopRestarted)
   })
 
+  // The panel leaves the screen when the user opens another tab or session.
+  // Park the view instead of destroying it: it keeps streaming, hidden, and the
+  // way back is instant. The main process ends it after a while.
   onCleanup(() => {
     generation += 1
     const previous = attached
     attached = undefined
-    if (previous) void client.close({ embed: previous.embed }).catch(() => {})
+    if (previous) void client.detach({ embed: previous.embed }).catch(() => {})
   })
 
   return (

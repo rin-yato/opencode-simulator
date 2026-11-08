@@ -200,18 +200,66 @@ describe("SimulatorPool", () => {
     expect(pool.last("ses_1")).toBeUndefined()
   })
 
-  test("releaseSoft ends a hold and keeps the claim and the panel", async () => {
+  test("markIdle ends a hold and keeps the claim and the panel", async () => {
     const { sessions, pool, released } = setup()
     await pool.manage(device("udid-1"))
     await pool.claim("ses_1", "udid-1")
     pool.hold("ses_1")
     await pool.panel({ sessionID: "ses_1", udid: "udid-1", state: "visible", window: "w" })
-    expect(await pool.releaseSoft("ses_1")).toBe("udid-1")
+    expect(await pool.markIdle("ses_1")).toBe("udid-1")
     expect(pool.releaseState("ses_1")).toBe("panel")
     expect(sessions.pick("ses_1")).toBe("udid-1")
     expect(released).toEqual([])
-    expect(await pool.releaseSoft("ses_9")).toBeUndefined()
-    expect(await pool.releaseSoft("ses_1", "udid-2")).toBeUndefined()
+    expect(await pool.markIdle("ses_9")).toBeUndefined()
+    expect(await pool.markIdle("ses_1", "udid-2")).toBeUndefined()
+  })
+
+  test("the name shows in use while an agent works, idle once it is done, plain when unbound", async () => {
+    const { pool, renames } = setup()
+    const last = () => renames.at(-1)?.name
+    await pool.manage(device("udid-1"))
+    pool.started("ses_1")
+    await pool.claim("ses_1", "udid-1")
+    expect(last()).toBe("udid-1 · in use")
+
+    // The turn is still running, but the agent said it is done.
+    expect(await pool.markIdle("ses_1")).toBe("udid-1")
+    await wait(5)
+    expect(last()).toBe("udid-1 · idle")
+    expect(pool.isBusy("udid-1")).toBe(false)
+    expect(pool.releaseState("ses_1")).toBe("idle")
+
+    // Using the simulator again makes it active.
+    pool.engage("ses_1")
+    await wait(5)
+    expect(last()).toBe("udid-1 · in use")
+    expect(pool.isBusy("udid-1")).toBe(true)
+
+    await pool.idle("ses_1")
+    expect(last()).toBe("udid-1 · idle")
+    await pool.releaseManual("ses_1")
+    expect(last()).toBe("udid-1")
+  })
+
+  test("an open panel keeps a device idle, not in use, and still protects it", async () => {
+    const { pool, renames } = setup()
+    await pool.manage(device("udid-1"))
+    await pool.claim("ses_1", "udid-1")
+    await pool.panel({ sessionID: "ses_1", udid: "udid-1", state: "visible", window: "w" })
+    expect(renames.at(-1)?.name).toBe("udid-1 · idle")
+    expect(pool.isBusy("udid-1", "ses_2")).toBe(true)
+  })
+
+  test("a hold marks the device in use until it is marked idle", async () => {
+    const { pool, renames } = setup()
+    await pool.manage(device("udid-1"))
+    await pool.claim("ses_1", "udid-1")
+    pool.hold("ses_1")
+    await wait(5)
+    expect(renames.at(-1)?.name).toBe("udid-1 · in use")
+    await pool.markIdle("ses_1")
+    await wait(5)
+    expect(renames.at(-1)?.name).toBe("udid-1 · idle")
   })
 
   test("an idle device winds down after the shutdown delay but stays claimed", async () => {

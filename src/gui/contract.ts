@@ -32,6 +32,13 @@ export const SimulatorIpc = Ipc.define({
     close: {
       input: Schema.Struct({ embed: Schema.String }),
     },
+    /**
+     * The panel left the screen (another tab or session). Keep the view alive
+     * and hidden so coming back does not reload the stream.
+     */
+    detach: {
+      input: Schema.Struct({ embed: Schema.String }),
+    },
     release: {
       input: Schema.Struct({
         device: Schema.String,

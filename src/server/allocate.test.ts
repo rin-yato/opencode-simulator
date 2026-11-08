@@ -146,6 +146,19 @@ describe("allocate", () => {
     expect(pool.pick("b")).toBe(first.device.udid)
   })
 
+  test("a session that is done mid-turn gives its device up to another session", async () => {
+    const { pool, deps, created } = setup([device("iPhone 17 Pro")])
+    pool.started("a")
+    const first = await allocate(pool, { sessionID: "a" }, deps)
+    const busy = await allocate(pool, { sessionID: "b" }, deps)
+    expect(busy.device.udid).not.toBe(first.device.udid)
+    await pool.markIdle("a")
+    pool.started("c")
+    const taken = await allocate(pool, { sessionID: "c", from: "iPhone 17 Pro" }, deps)
+    expect([first.device.udid, busy.device.udid]).toContain(taken.device.udid)
+    expect(created).toHaveLength(2)
+  })
+
   test("takes an idle booted device before waking a shut down one", async () => {
     const { pool, deps, devices } = setup([device("iPhone 17 Pro")])
     const sleeping = device("iPhone 17 Pro 1")

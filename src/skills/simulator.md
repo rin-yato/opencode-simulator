@@ -51,13 +51,16 @@ creates one.
 ## Lifetime
 
 Your device stays yours after your turn ends. The user may keep testing it, so when you
-finish a task, just stop: do not call `sim_release`. Another session that needs a
-simulator takes yours over only while it is idle (no running turn, no open panel, no
-`hold`); `sim_start()` then gives you a device again. Apps and data survive, and an unused
-device shuts down after about 30 minutes and wakes when the panel reopens.
+are done, call `sim_idle()` as the last simulator step. It marks the device idle (its name
+ends with ` · idle`, while an active one ends with ` · in use`) and keeps it with this
+session. Never delete or release it. Another session that needs a simulator takes an idle
+one over (no running turn, no open panel, no `hold`) before a new one is created, and
+`sim_start()` gives you a device again. If you forget, the end of your turn marks it idle
+anyway. Using a `sim_*` tool again makes it active.
 
-`hold` or `holdMinutes` pins the device against takeover and shutdown. `sim_release` only
-ends a hold; it never closes the user's panel.
+Apps and data survive, and an unused device shuts down after about 30 minutes and wakes
+when the panel reopens. `hold` or `holdMinutes` pins the device against takeover and
+shutdown until `sim_idle` or the session closes.
 
 Nothing is deleted automatically. Do not delete the user's own simulators unless asked.
 
@@ -84,6 +87,5 @@ one fails, call `sim_start` to open it. `sim_keyboard` also needs a focused text
 ## Failures
 
 - A rotate can succeed while the app stays portrait-only.
-- All five managed devices for a model are busy (running turn, open panel, or hold): end a
-  hold, ask the user to close a panel, or `sim_delete` one.
+- All five managed devices for a model are busy (running turn, open panel, or hold): call `sim_idle` on devices you are done with, ask the user to close a panel, or `sim_delete` one.
 - The first device of a model pays a cold boot (minutes). Later ones reuse it.

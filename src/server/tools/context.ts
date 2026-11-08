@@ -106,6 +106,7 @@ export const currentDevice = async (
     throw new Error("No simulator is assigned to this session. Run sim_start or pass udid.")
   }
   const device = await resolveDevice(wanted, { signal: context.signal })
+  simulator.pool.engage(context.sessionID)
   if (requested?.trim() && share !== true) {
     const others = simulator.pool.owners(device.udid, context.sessionID)
     if (others.length > 0 || simulator.pool.isBusy(device.udid, context.sessionID)) {

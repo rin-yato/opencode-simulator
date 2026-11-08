@@ -7,6 +7,7 @@ import {
 import type { Embed, Plugin } from "@opencode/plugin/gui/main"
 import { SimulatorIpc } from "./contract"
 import { createHubManager } from "./hub"
+import { createParking } from "./parking"
 import { panelTheme, previewThemeCss, resolveMode, type PanelMode } from "./theme"
 
 interface Pane {
@@ -28,6 +29,10 @@ const paneId = (windowId: number, sessionKey: string) => `${windowId}\u0000${ses
 
 /** How long a hub lives after its last panel closes, so reopening is instant. */
 const RELEASE_IDLE_MS = 30_000
+
+/** How long a pane whose panel left the screen stays alive, and how many may. */
+const PARK_MS = 10 * 60_000
+const PARK_MAX = 4
 
 /**
  * Load the preview page.
@@ -77,6 +82,15 @@ const setup: Plugin.MainSetup = (ctx) => {
   const panes = new Map<string, Pane>()
   const byEmbed = new Map<string, Pane>()
   const idleTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  // Keyed by embed id. An expired pane is disposed like a closed one.
+  const parking = createParking({
+    ttlMs: PARK_MS,
+    max: PARK_MAX,
+    expire: (embed) => {
+      const pane = byEmbed.get(embed)
+      if (pane) disposePane(pane)
+    },
+  })
 
   const hasPaneFor = (device: string) => [...panes.values()].some((pane) => pane.device === device)
 
@@ -107,6 +121,7 @@ const setup: Plugin.MainSetup = (ctx) => {
   }
 
   const disposePane = (pane: Pane) => {
+    parking.unpark(pane.embed.id)
     panes.delete(paneId(pane.windowId, pane.sessionKey))
     byEmbed.delete(pane.embed.id)
     pane.embed.dispose()
@@ -121,6 +136,8 @@ const setup: Plugin.MainSetup = (ctx) => {
       const id = paneId(caller.window, input.key)
       const existing = panes.get(id)
       if (existing && existing.device === input.device) {
+        // The panel is back: show the view that kept running.
+        if (parking.unpark(existing.embed.id)) existing.embed.show(true)
         if (input.mode && input.mode !== existing.mode) {
           existing.mode = input.mode
           void applyTheme(existing).catch(() => {})
@@ -183,11 +200,15 @@ const setup: Plugin.MainSetup = (ctx) => {
       view.webContents.on("did-finish-load", () => {
         void applyTheme(pane).catch(() => {})
       })
+      // A parked view has no panel to show the failure to, and returning to a
+      // broken view would not recover: drop it so the panel starts a fresh one.
       view.webContents.on("did-fail-load", (_event, code, description, _url, isMainFrame) => {
         if (!isMainFrame || code === -3) return
+        if (parking.has(embed.id)) return disposePane(pane)
         provider.emit("failed", { embed: embed.id, detail: `${description} (${code})` })
       })
       view.webContents.on("render-process-gone", (_event, details) => {
+        if (parking.has(embed.id)) return disposePane(pane)
         provider.emit("failed", {
           embed: embed.id,
           detail: `The viewer process stopped: ${details.reason}`,
@@ -217,10 +238,23 @@ const setup: Plugin.MainSetup = (ctx) => {
       disposePane(pane)
     },
 
+    detach: (input, caller) => {
+      const pane = byEmbed.get(input.embed)
+      if (!pane || pane.windowId !== caller.window) return
+      pane.embed.show(false)
+      parking.park(pane.embed.id)
+    },
+
     release: async (input) => {
       // Another pane may still show this device (explicit sharing or another
       // window's session). Pane disposal schedules the real release.
       if (!input.force && hasPaneFor(input.device)) return
+      // A deleted device cannot be streamed any more, parked or not.
+      if (input.force) {
+        for (const pane of [...panes.values()]) {
+          if (pane.device === input.device && parking.has(pane.embed.id)) disposePane(pane)
+        }
+      }
       await hub.release(input.device)
     },
   })
@@ -248,6 +282,7 @@ const setup: Plugin.MainSetup = (ctx) => {
 
   ctx.onCleanup(() => {
     stopStarted()
+    parking.dispose()
     for (const pane of [...panes.values()]) disposePane(pane)
     for (const timer of idleTimers.values()) clearTimeout(timer)
     idleTimers.clear()

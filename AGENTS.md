@@ -32,15 +32,16 @@ Every push to `main` runs `.github/workflows/release.yml`. It consumes pending c
 
 - OpenCode runs one plugin instance per project in one server process, and storage is global. Every instance shares one process-wide pool (`src/server/shared-pool.ts`). One server process is assumed.
 - Allocation is in `src/server/allocate.ts`, claims in `src/server/simulator-pool.ts`, and busy state, panel leases, holds, and shutdown in `src/server/activity.ts`.
-- A claim (session to device) outlives the turn and the panel. It ends only when the session is deleted or archived, the device is deleted, another session takes the device over, or the panel's Release/`releaseManual` runs. A device is busy while a turn runs, a panel is open, or a hold pins it; only a busy device is protected. An idle managed device shuts down after 30 minutes, keeps its data, and is never auto-deleted. `sim_release` is soft: it ends a hold and nothing else.
+- A claim (session to device) outlives the turn and the panel. It ends only when the session is deleted or archived, the device is deleted, another session takes the device over, or the panel's Release/`releaseManual` runs. A device is busy while a turn runs, a panel is open, or a hold pins it; only a busy device is protected. An idle managed device shuts down after 30 minutes, keeps its data, and is never auto-deleted. `sim_idle` (the agent says it is done) ends a hold and marks the session as yielded: the claim stays, the device stops being busy, and the next `sim_*` tool use (`engage`) undoes it. The turn end does the same.
 - Allocation order: own claim, last device, then managed devices booted before shut down and unclaimed before idle-claimed. A managed device claimed by an idle session is taken over (`SimulatorPool.takeOver`, which tells that session's window) before a new device is created. External devices are never taken over. A session whose claim was lost gets its last free managed device back when its panel opens (`SimulatorPool.resume`) unless it was hard-released.
-- Panels are 30s leases refreshed by a 10s heartbeat from the window. serve-sim runs per device, is owned by GUI main, and stops 30s after its last pane.
+- A panel that leaves the screen is parked, not closed: GUI main keeps its view and stream for 10 minutes (at most four, `src/gui/parking.ts`) so returning does not reload the page. `register` on a parked pane reattaches it.
+- Panels are 30s leases refreshed by a 10s heartbeat from the window. serve-sim runs per device, is owned by GUI main, and stops 30s after its last pane is disposed (a parked pane counts until it expires).
 
 ## Rules
 
 - Resolve the calling session's device. Never fall back to the focused session or the first booted simulator.
 - One UDID is one simulator. Two sessions on one UDID share screen and state, so `sim_start` allocates a free managed pool device by default. `from` selects a model. External devices are never auto-claimed, auto-refreshed, or auto-shut down. Use `sim_create` for an explicitly named managed device.
-- A managed device's name follows its claim (`iPhone 17 Pro 2 · in use`) and is cosmetic. Match on the UDID or the plain name in `simulator-managed`, never the marked name. External devices are never renamed.
+- A managed device's name is `<model> N · in use` while an agent works on it (a turn that has not yielded, or a hold), `· idle` while a session only keeps it or a panel shows it, and plain when unclaimed. It is cosmetic. Match on the UDID or the plain name in `simulator-managed`, never the marked name. External devices are never renamed.
 - Spawn with argument arrays (`execFile`/`spawn`), never shell strings.
 - Keep state bounded: session maps cap at 500 entries, managed devices at 200 with five per model/runtime, screenshots at 24 hours and 200 files.
 - Tool descriptions and `src/skills/simulator.md` are the agent-facing API. Update them when behavior changes.
