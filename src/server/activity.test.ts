@@ -24,11 +24,12 @@ describe("Activity", () => {
     expect(activity.isRunning("ses_1")).toBe(true)
   })
 
-  test("an idle session releases a closed panel's device", async () => {
+  test("an idle session keeps a closed panel's device", async () => {
     const { sessions, activity } = setup({ ses_1: "udid-1" })
     await activity.panel({ sessionID: "ses_1", state: "visible" })
     await activity.panel({ sessionID: "ses_1", state: "closed" })
-    expect(sessions.pick("ses_1")).toBeUndefined()
+    expect(sessions.pick("ses_1")).toBe("udid-1")
+    expect(activity.isBusy("udid-1")).toBe(false)
     expect(activity.panelState("ses_1")).toBe("closed")
   })
 
@@ -95,7 +96,7 @@ describe("Activity", () => {
     expect(activity.panelState("ses_1")).toBe("closed")
   })
 
-  test("notifies the window when a claim is released", async () => {
+  test("notifies the window only when a session's claim ends", async () => {
     const sessions = new SessionDevices({ ses_1: "udid-1" })
     const released: string[] = []
     const activity = new Activity({
@@ -104,6 +105,9 @@ describe("Activity", () => {
       onRelease: (sessionID, udid) => released.push(`${sessionID}:${udid}`),
     })
     await activity.panel({ sessionID: "ses_1", state: "closed" })
+    await activity.idle("ses_1")
+    expect(released).toEqual([])
+    await activity.close("ses_1")
     expect(released).toEqual(["ses_1:udid-1"])
   })
 
@@ -129,7 +133,8 @@ describe("Activity", () => {
       ttlMs: 1_000,
     })
     await activity.expirePanels(Date.now() + 5_000)
-    expect(sessions.pick("ses_1")).toBeUndefined()
+    expect(sessions.pick("ses_1")).toBe("udid-1")
+    expect(activity.isBusy("udid-1")).toBe(false)
     expect(activity.panelState("ses_1")).toBe("closed")
   })
 
@@ -149,8 +154,10 @@ describe("Activity", () => {
     })
     await activity.panel({ sessionID: "ses_1", state: "closed", window: "win-a" })
     expect(sessions.pick("ses_1")).toBe("udid-1")
+    expect(activity.isBusy("udid-1")).toBe(true)
     await activity.panel({ sessionID: "ses_1", state: "closed", window: "win-b" })
-    expect(sessions.pick("ses_1")).toBeUndefined()
+    expect(sessions.pick("ses_1")).toBe("udid-1")
+    expect(activity.isBusy("udid-1")).toBe(false)
   })
 
   test("a hold keeps the device after the panel closes and the session idles", async () => {
@@ -195,8 +202,10 @@ describe("Activity", () => {
     const { sessions, activity } = setup({ ses_1: "udid-1" })
     activity.hold("ses_1", 1_000)
     expect(activity.releaseState("ses_1")).toBe("held")
+    expect(activity.isBusy("udid-1")).toBe(true)
     await activity.expirePanels(Date.now() + 5_000)
-    expect(sessions.pick("ses_1")).toBeUndefined()
+    expect(sessions.pick("ses_1")).toBe("udid-1")
+    expect(activity.isBusy("udid-1")).toBe(false)
     expect(activity.releaseState("ses_1")).toBe("idle")
   })
 

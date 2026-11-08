@@ -32,7 +32,8 @@ Every push to `main` runs `.github/workflows/release.yml`. It consumes pending c
 
 - OpenCode runs one plugin instance per project in one server process, and storage is global. Every instance shares one process-wide pool (`src/server/shared-pool.ts`). One server process is assumed.
 - Allocation is in `src/server/allocate.ts`, claims in `src/server/simulator-pool.ts`, and busy state, panel leases, holds, and shutdown in `src/server/activity.ts`.
-- A claim ends when no panel, no running turn, and no hold remain. A released managed device shuts down after 30 minutes, keeps its data, and is never auto-deleted. A panel that opens on a session with no claim takes its last managed device back (`SimulatorPool.resume`) unless the session called `sim_release`.
+- A claim (session to device) outlives the turn and the panel. It ends only when the session is deleted or archived, the device is deleted, another session takes the device over, or the panel's Release/`releaseManual` runs. A device is busy while a turn runs, a panel is open, or a hold pins it; only a busy device is protected. An idle managed device shuts down after 30 minutes, keeps its data, and is never auto-deleted. `sim_release` is soft: it ends a hold and nothing else.
+- Allocation order: own claim, last device, then managed devices booted before shut down and unclaimed before idle-claimed. A managed device claimed by an idle session is taken over (`SimulatorPool.takeOver`, which tells that session's window) before a new device is created. External devices are never taken over. A session whose claim was lost gets its last free managed device back when its panel opens (`SimulatorPool.resume`) unless it was hard-released.
 - Panels are 30s leases refreshed by a 10s heartbeat from the window. serve-sim runs per device, is owned by GUI main, and stops 30s after its last pane.
 
 ## Rules

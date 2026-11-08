@@ -5,10 +5,12 @@ import type { SessionDevices } from "./session-devices"
 /**
  * Who is using a simulator.
  *
- * A device is busy while a panel is open (the user can see or reopen it) or
- * while the session that owns it is running (the agent is still working). A
- * hold keeps a claim past the turn end until an explicit release or TTL.
- * Panels are leased: a dead window stops refreshing and is released.
+ * A claim (session -> device) outlives the turn and the panel: a finished
+ * session keeps its device so the user can keep testing, and another session
+ * may take it over once it is idle. A device is busy while a panel is open,
+ * while its session is running, or while a hold pins it. Only a busy device is
+ * protected from takeover and from shutdown. Panels are leased: a dead window
+ * stops refreshing and its panel closes.
  */
 export type PanelState = "closed" | "open" | "active" | "visible"
 
@@ -92,8 +94,7 @@ export class Activity {
 
   /**
    * Update one window's panel. A panel with no existing claim claims a free
-   * device. Closing it releases the claim once no other window, running turn,
-   * or hold needs it.
+   * device. Closing it keeps the claim and lets an unused device wind down.
    */
   async panel(update: PanelUpdate): Promise<void> {
     if (this.#stopped) return
@@ -101,8 +102,9 @@ export class Activity {
     const key = this.#panelKey(window, update.sessionID)
 
     if (update.state === "closed") {
+      const closed = this.#panels.get(key)
       this.#panels.delete(key)
-      await this.#releaseIfIdle(update.sessionID)
+      await this.#settle(update.sessionID, closed?.udid)
       return
     }
 
@@ -151,10 +153,10 @@ export class Activity {
     if (udid) this.#cancelShutdown(udid)
   }
 
-  /** The agent finished a turn. Release the device if nothing else needs it. */
+  /** The agent finished a turn. The session keeps its device, now idle. */
   async idle(sessionID: string): Promise<void> {
     this.#running.delete(sessionID)
-    await this.#releaseIfIdle(sessionID)
+    await this.#settle(sessionID)
   }
 
   /** The session was deleted or archived: forget panels, holds, and running. */
@@ -162,10 +164,10 @@ export class Activity {
     this.#deletePanelsForSession(sessionID)
     this.#running.delete(sessionID)
     this.#holds.delete(sessionID)
-    await this.#releaseIfIdle(sessionID)
+    await this.#forget(sessionID)
   }
 
-  /** Keep the session's device past the end of this turn. */
+  /** Pin the session's device: no takeover and no shutdown until released or expired. */
   hold(sessionID: string, ttlMs?: number): void {
     this.#holds.set(sessionID, ttlMs && ttlMs > 0 ? Date.now() + ttlMs : undefined)
     const udid = this.#sessions.pick(sessionID)
@@ -235,7 +237,7 @@ export class Activity {
       affected.add(sessionID)
       changed += 1
     }
-    for (const sessionID of affected) await this.#releaseIfIdle(sessionID)
+    for (const sessionID of affected) await this.#settle(sessionID)
     return changed
   }
 
@@ -276,8 +278,8 @@ export class Activity {
   }
 
   /**
-   * Is someone other than `except` using this device? Claims are checked by the
-   * caller; this covers open panels and running sessions.
+   * Is someone other than `except` actively using this device? Open panels,
+   * running sessions, and holds count; an idle claim does not.
    */
   isBusy(udid: string, except?: string): boolean {
     for (const panel of this.#panels.values()) {
@@ -286,20 +288,56 @@ export class Activity {
     for (const sessionID of this.#running) {
       if (sessionID !== except && this.#sessions.pick(sessionID) === udid) return true
     }
+    for (const sessionID of this.#holds.keys()) {
+      if (sessionID !== except && this.isHeld(sessionID) && this.#sessions.pick(sessionID) === udid)
+        return true
+    }
     return false
   }
 
+  /** End a hold. The claim stays and the device may wind down. */
+  async unhold(sessionID: string): Promise<void> {
+    if (!this.#holds.delete(sessionID)) return
+    await this.#settle(sessionID)
+  }
+
+  /**
+   * Take the device from sessions that only keep it idle. Returns false when
+   * one of them still needs it (running, panel open, or held).
+   */
+  async takeOver(udid: string, sessionID: string): Promise<boolean> {
+    if (this.isBusy(udid, sessionID)) return false
+    for (const other of this.#sessions.owners(udid, sessionID)) {
+      this.#deletePanelsForSession(other)
+      this.#holds.delete(other)
+      await this.#sessions.forgetSession(other)
+      this.#onRelease?.(other, udid, false)
+    }
+    this.#cancelShutdown(udid)
+    return true
+  }
   dispose(): void {
     this.#stopped = true
     for (const timer of this.#timers.values()) clearTimeout(timer)
     this.#timers.clear()
   }
 
-  async #releaseIfIdle(sessionID: string): Promise<void> {
+  /** A session went quiet. Keep its claim; refresh the name and the shutdown timer. */
+  async #settle(sessionID: string, panelUdid?: string): Promise<void> {
     if (this.#stopped) return
-    if (this.#hasPanel(sessionID) || this.#running.has(sessionID) || this.isHeld(sessionID)) {
-      return
+    const udids = new Set<string>()
+    const owned = this.#sessions.pick(sessionID)
+    if (owned) udids.add(owned)
+    if (panelUdid) udids.add(panelUdid)
+    for (const udid of udids) {
+      await this.#onChange?.(udid)
+      await this.#maybeShutdown(udid)
     }
+  }
+
+  /** The session is gone: drop its claim and let the device wind down. */
+  async #forget(sessionID: string): Promise<void> {
+    if (this.#stopped) return
     const udid = await this.#sessions.forgetSession(sessionID)
     if (!udid) return
     await this.#onChange?.(udid)
@@ -310,7 +348,7 @@ export class Activity {
   async #maybeShutdown(udid: string): Promise<void> {
     if (this.#stopped || this.#shutdownDelayMs <= 0) return
     if (!this.#shouldShutdown(udid)) return
-    if (this.#sessions.owners(udid).length > 0 || this.isBusy(udid)) return
+    if (this.isBusy(udid)) return
 
     this.#cancelShutdown(udid)
     const timer = setTimeout(() => {
@@ -323,13 +361,13 @@ export class Activity {
 
   async #shutdown(udid: string): Promise<void> {
     if (this.#stopped || !this.#shouldShutdown(udid)) return
-    if (this.#sessions.owners(udid).length > 0 || this.isBusy(udid)) return
+    if (this.isBusy(udid)) return
     try {
       const devices = await this.#list()
       const device = devices.find((candidate) => candidate.udid === udid)
       if (!device || device.state !== "Booted") return
-      // A claim can land while `simctl list` runs.
-      if (this.#sessions.owners(udid).length > 0 || this.isBusy(udid)) return
+      // A panel can open while `simctl list` runs.
+      if (this.isBusy(udid)) return
       await this.#shutdownDevice(device)
     } catch (cause) {
       console.warn("opencode-simulator: could not shut down a released simulator", cause)
@@ -345,13 +383,6 @@ export class Activity {
 
   #panelKey(window: string, sessionID: string): string {
     return `${window}\u0000${sessionID}`
-  }
-
-  #hasPanel(sessionID: string): boolean {
-    for (const panel of this.#panels.values()) {
-      if (panel.sessionID === sessionID) return true
-    }
-    return false
   }
 
   #deletePanelsForSession(sessionID: string): void {
