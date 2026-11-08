@@ -88,6 +88,7 @@ export async function allocate(
   return result
 }
 
+/** Explicit requests respect any other claim, idle or not. */
 const heldByOthers = (pool: SimulatorPool, udid: string, sessionID: string): boolean =>
   pool.owners(udid, sessionID).length > 0 || pool.isBusy(udid, sessionID)
 
@@ -133,7 +134,9 @@ async function choose(
   return pool.withLock(async () => {
     const devices = await deps.list(signal)
     const from = wanted ? matchDevice(devices, wanted) : undefined
-    const free = (udid: string) => !heldByOthers(pool, udid, sessionID)
+    // An idle claim is not a use: its device can be taken over.
+    const free = (udid: string) => !pool.contested(udid, sessionID)
+    const unowned = (udid: string) => pool.owners(udid, sessionID).length === 0
 
     let last = pool.last(sessionID)
     const lastDevice = devices.find((device) => device.udid === last)
@@ -153,18 +156,24 @@ async function choose(
       chooseReference(devices, free, (udid) => pool.isManaged(udid))
     const candidates = poolDevices(source, devices)
       .filter((device) => pool.isManaged(device.udid))
-      .sort((a, b) => Number(b.udid === last) - Number(a.udid === last))
+      .sort(
+        (a, b) =>
+          Number(b.udid === last) - Number(a.udid === last) ||
+          // Reuse a running device before waking one, and a free one before an idle one.
+          Number(b.state === "Booted") - Number(a.state === "Booted") ||
+          Number(unowned(b.udid)) - Number(unowned(a.udid)),
+      )
 
     for (const device of candidates) {
       if (!free(device.udid)) continue
-      if (await pool.claim(sessionID, device.udid)) {
+      if (await pool.takeOver(sessionID, device.udid)) {
         return { device, source, refresh: device.udid !== last }
       }
     }
 
     if (candidates.length >= MAX_POOL_SIZE) {
       throw new Error(
-        `All ${MAX_POOL_SIZE} managed ${deviceModel(source)} simulators are in use. Release one with sim_release, or delete one with sim_delete.`,
+        `All ${MAX_POOL_SIZE} managed ${deviceModel(source)} simulators are in use by a running turn, an open panel, or a hold. Close a panel or end a hold, or delete one with sim_delete.`,
       )
     }
     const device = await createManaged(

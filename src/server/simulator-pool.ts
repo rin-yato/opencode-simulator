@@ -87,14 +87,14 @@ export class SimulatorPool {
   }
 
   /**
-   * Reflect ownership in the device's name: `<model> N · in use` while a
-   * session holds it, the plain name otherwise. Only managed devices are
+   * Reflect use in the device's name: `<model> N · in use` while a turn, a
+   * panel, or a hold uses it, the plain name otherwise. Only managed devices are
    * renamed, and the name stays cosmetic — the pool still keys on the UDID.
    */
   async syncName(udid: string): Promise<void> {
     const base = this.managed.get(udid)?.name
     if (!base) return
-    const busy = this.owners(udid).length > 0 || this.isBusy(udid)
+    const busy = this.isBusy(udid)
     await this.#rename(udid, busy ? inUseName(base) : base)
   }
 
@@ -129,7 +129,7 @@ export class SimulatorPool {
     for (const device of devices) {
       const base = this.managed.get(device.udid)?.name
       if (!base) continue
-      const busy = this.owners(device.udid).length > 0 || this.isBusy(device.udid)
+      const busy = this.isBusy(device.udid)
       const wanted = busy ? inUseName(base) : base
       if (device.name === wanted) {
         this.#applied.set(device.udid, wanted)
@@ -166,6 +166,28 @@ export class SimulatorPool {
     return claimed
   }
 
+  /**
+   * Claim a managed device that another session only keeps idle, taking it
+   * over. Fails when that session still uses it, or the device is external.
+   */
+  async takeOver(sessionID: string, udid: string): Promise<boolean> {
+    const owners = this.owners(udid, sessionID)
+    if (owners.length > 0) {
+      if (!this.managed.has(udid)) return false
+      if (!(await this.activity.takeOver(udid, sessionID))) return false
+      for (const owner of owners) {
+        if (this.#last.get(owner) === udid) this.#last.delete(owner)
+      }
+    }
+    return this.claim(sessionID, udid)
+  }
+
+  /** Is `udid` in use by a session other than `sessionID`, in a way takeover must respect? */
+  contested(udid: string, sessionID: string): boolean {
+    if (this.isBusy(udid, sessionID)) return true
+    return this.owners(udid, sessionID).length > 0 && !this.managed.has(udid)
+  }
+
   /** Point a session at a device, allowing deliberate sharing. */
   async remember(sessionID: string, udid: string): Promise<void> {
     const previous = this.sessions.pick(sessionID)
@@ -179,9 +201,10 @@ export class SimulatorPool {
   }
 
   /**
-   * The device a panel should show for this session. A claim ends with the turn,
-   * so a user who comes back later finds none; take the session's last managed
-   * device back if nobody else has it, and wake it if it was shut down.
+   * The device a panel should show for this session. A claim normally outlives
+   * the turn; this covers a lost one (another session took it, or the store was
+   * cleared): take the session's last managed device back if it is free, and
+   * wake it if it was shut down.
    */
   async resume(sessionID: string): Promise<string | undefined> {
     const held = this.sessions.pick(sessionID) ?? this.activity.panelDevice(sessionID)
@@ -190,7 +213,7 @@ export class SimulatorPool {
 
     const udid = this.#last.get(sessionID)
     if (!udid || !this.managed.has(udid)) return undefined
-    if (this.owners(udid, sessionID).length > 0 || this.isBusy(udid, sessionID)) return undefined
+    if (this.contested(udid, sessionID) || this.owners(udid, sessionID).length > 0) return undefined
 
     let device: Device | undefined
     try {
@@ -273,6 +296,18 @@ export class SimulatorPool {
       if (last === udid) this.#last.delete(sessionID)
     }
     return owners
+  }
+
+  /**
+   * The agent is done with its device. The session keeps it, idle, for the user
+   * to keep testing; another session may take it over when it needs one.
+   * Only ends a hold. Never clears the panel.
+   */
+  async releaseSoft(sessionID: string, expectedUdid?: string): Promise<string | undefined> {
+    const udid = this.sessions.pick(sessionID)
+    if (!udid || (expectedUdid && udid !== expectedUdid)) return undefined
+    await this.activity.unhold(sessionID)
+    return udid
   }
 
   async releaseManual(sessionID: string, expectedUdid?: string): Promise<string | undefined> {

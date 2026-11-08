@@ -88,6 +88,7 @@ describe("SimulatorPool", () => {
   test("marks a managed device in use and clears the mark on release", async () => {
     const { pool, renames } = setup()
     await pool.manage(device("udid-1"))
+    pool.started("ses_1")
     await pool.claim("ses_1", "udid-1")
     expect(renames.at(-1)).toEqual({ udid: "udid-1", name: "udid-1 · in use" })
     await pool.releaseManual("ses_1")
@@ -97,6 +98,8 @@ describe("SimulatorPool", () => {
   test("keeps the mark while another session still shares the device", async () => {
     const { pool, renames } = setup()
     await pool.manage(device("udid-1"))
+    pool.started("ses_1")
+    pool.started("ses_2")
     await pool.claim("ses_1", "udid-1")
     await pool.remember("ses_2", "udid-1")
     await pool.releaseManual("ses_1")
@@ -141,6 +144,7 @@ describe("SimulatorPool", () => {
       },
     )
     await pool.manage(device("udid-1"))
+    pool.started("ses_2")
     await pool.claim("ses_1", "udid-1")
     await pool.remember("ses_2", "udid-1")
     await pool.remember("ses_1", "udid-2")
@@ -196,6 +200,56 @@ describe("SimulatorPool", () => {
     expect(pool.last("ses_1")).toBeUndefined()
   })
 
+  test("releaseSoft ends a hold and keeps the claim and the panel", async () => {
+    const { sessions, pool, released } = setup()
+    await pool.manage(device("udid-1"))
+    await pool.claim("ses_1", "udid-1")
+    pool.hold("ses_1")
+    await pool.panel({ sessionID: "ses_1", udid: "udid-1", state: "visible", window: "w" })
+    expect(await pool.releaseSoft("ses_1")).toBe("udid-1")
+    expect(pool.releaseState("ses_1")).toBe("panel")
+    expect(sessions.pick("ses_1")).toBe("udid-1")
+    expect(released).toEqual([])
+    expect(await pool.releaseSoft("ses_9")).toBeUndefined()
+    expect(await pool.releaseSoft("ses_1", "udid-2")).toBeUndefined()
+  })
+
+  test("an idle device winds down after the shutdown delay but stays claimed", async () => {
+    const shut: string[] = []
+    const { sessions, pool } = setup(
+      {},
+      {
+        shutdownDelayMs: 5,
+        list: async () => [{ ...device("udid-1"), state: "Booted" }],
+        shutdown: async (d) => {
+          shut.push(d.udid)
+        },
+      },
+    )
+    await pool.manage(device("udid-1"))
+    await pool.claim("ses_1", "udid-1")
+    pool.started("ses_1")
+    await pool.idle("ses_1")
+    await wait(30)
+    expect(shut).toEqual(["udid-1"])
+    expect(sessions.pick("ses_1")).toBe("udid-1")
+  })
+
+  test("takeOver notifies the window of the session that lost its device", async () => {
+    const { sessions, pool, released } = setup()
+    await pool.manage(device("udid-1"))
+    await pool.claim("ses_1", "udid-1")
+    expect(await pool.takeOver("ses_2", "udid-1")).toBe(true)
+    expect(sessions.pick("ses_1")).toBeUndefined()
+    expect(sessions.pick("ses_2")).toBe("udid-1")
+    expect(released).toEqual([{ sessionID: "ses_1", udid: "udid-1", force: false }])
+    expect(pool.last("ses_1")).toBeUndefined()
+
+    pool.started("ses_2")
+    expect(await pool.takeOver("ses_3", "udid-1")).toBe(false)
+    expect(sessions.pick("ses_2")).toBe("udid-1")
+  })
+
   describe("resume", () => {
     const resumable = async (
       extra: Partial<ConstructorParameters<typeof SimulatorPool>[0]> = {},
@@ -213,8 +267,9 @@ describe("SimulatorPool", () => {
       )
       await ctx.pool.manage(device("udid-1"))
       await ctx.pool.claim("ses_1", "udid-1")
-      // The turn ends with no panel: the claim is gone, the affinity stays.
-      await ctx.pool.idle("ses_1")
+      // The claim is lost (another session took it, or the store was cleared);
+      // the affinity stays.
+      await ctx.sessions.forgetSession("ses_1")
       expect(ctx.sessions.pick("ses_1")).toBeUndefined()
       return { ...ctx, booted }
     }
@@ -256,10 +311,17 @@ describe("SimulatorPool", () => {
       expect(await pool.resume("ses_1")).toBe("udid-1")
     })
 
+    test("an idle session keeps its claim without any resume", async () => {
+      const { pool, sessions } = await resumable()
+      await pool.claim("ses_1", "udid-1")
+      await pool.idle("ses_1")
+      expect(sessions.pick("ses_1")).toBe("udid-1")
+    })
+
     test("ignores external and deleted devices", async () => {
       const { pool } = setup({}, { list: async () => [device("udid-ext")] })
       await pool.claim("ses_1", "udid-ext")
-      await pool.idle("ses_1")
+      await pool.sessions.forgetSession("ses_1")
       expect(await pool.resume("ses_1")).toBeUndefined()
 
       const second = await resumable()
@@ -296,6 +358,7 @@ describe("SimulatorPool", () => {
     )
     await pool.manage(device("udid-gone"))
     await pool.manage(device("udid-live"))
+    pool.started("ses_3")
     await pool.reconcile()
     expect(managed.has("udid-gone")).toBe(false)
     expect(managed.has("udid-live")).toBe(true)

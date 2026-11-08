@@ -116,7 +116,8 @@ const FROM_SCHEMA = {
 const HOLD_SCHEMA = {
   type: "boolean",
   default: false,
-  description: "Keep the device after this turn until sim_release or session close.",
+  description:
+    "Pin the device against takeover by other sessions and shutdown, until sim_release or session close.",
 } as const
 
 const HOLD_MINUTES_SCHEMA = {
@@ -601,7 +602,7 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
   editor.add({
     name: "release",
     description:
-      "Release this session's simulator back to the pool now, closing its panel. Use it when a device was held or the agent is done before the panel is closed.",
+      "End a hold on this session's simulator. The session keeps the device, idle, so the user can keep testing; another session can take it when it needs one. Do not call this when you finish a task.",
     input: {
       type: "object",
       properties: {
@@ -615,11 +616,11 @@ export function registerLifecycleTools(editor: ToolEditor, simulator: SimulatorC
     options: SIM_OPTIONS,
     execute: define(async (input: ReleaseInput, context: ToolRuntime) => {
       const expected = input.udid?.trim() ? (await resolveDevice(input.udid)).udid : undefined
-      const released = await simulator.pool.releaseManual(context.sessionID, expected)
+      const released = await simulator.pool.releaseSoft(context.sessionID, expected)
       if (!released) {
-        throw new Error("This session has no simulator claim to release.")
+        throw new Error("This session has no simulator to release.")
       }
-      return ok(`released ${released}`, {
+      return ok(`${released} is idle; this session keeps it until another session needs it`, {
         udid: released,
         release: simulator.pool.releaseState(context.sessionID),
       })

@@ -122,7 +122,7 @@ Set these under `options` on the plugin entry:
   `Stream unavailable`, set `OPENCODE_SIMULATOR_NODE` to a Node 22+ path.
 - A device's first boot can take a couple of minutes. The panel waits for it and keeps the WebRTC stream. Slow startup phases are in the plugin log.
 - External simulators are never auto-claimed, auto-refreshed, or auto-shut down.
-- A released managed device shuts down after about 30 minutes and keeps its data. Opening the panel again on that session takes its last device back if no one else has it.
+- A session keeps its managed device after its turn ends or its panel closes, so you can keep testing. An unused device shuts down after about 30 minutes, keeps its data, and wakes when the panel reopens. Another session that needs a simulator takes an idle one over (a running turn, an open panel, or a hold protects it) before a new one is created.
   Nothing is deleted automatically; use `sim_delete`.
 - The pool keeps up to five managed devices per model and runtime.
 

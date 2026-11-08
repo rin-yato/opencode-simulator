@@ -85,6 +85,8 @@ describe("allocate", () => {
 
   test("two parallel allocations get two devices", async () => {
     const { pool, deps, created } = setup([device("iPhone 17 Pro")])
+    pool.started("a")
+    pool.started("b")
     const [a, b] = await Promise.all([
       allocate(pool, { sessionID: "a" }, deps),
       allocate(pool, { sessionID: "b" }, deps),
@@ -112,17 +114,83 @@ describe("allocate", () => {
     expect(again.refresh).toBe(false)
   })
 
-  test("a released session gets its last device back without refresh", async () => {
+  test("a finished session keeps its device and gets it back without refresh", async () => {
     const { pool, deps, created } = setup([device("iPhone 17 Pro")])
-    const other = await allocate(pool, { sessionID: "b" }, deps)
+    pool.started("a")
+    pool.started("b")
     const first = await allocate(pool, { sessionID: "a" }, deps)
-    await pool.releaseManual("a")
-    await pool.releaseManual("b")
+    const other = await allocate(pool, { sessionID: "b" }, deps)
+    await pool.idle("a")
+    await pool.idle("b")
+    expect(pool.pick("a")).toBe(first.device.udid)
     const again = await allocate(pool, { sessionID: "a" }, deps)
     expect(again.device.udid).toBe(first.device.udid)
     expect(again.refresh).toBe(false)
     expect(other.device.udid).not.toBe(first.device.udid)
     expect(created).toHaveLength(2)
+  })
+
+  test("a new session takes an idle session's running device instead of creating one", async () => {
+    const { pool, deps, devices, created } = setup([device("iPhone 17 Pro")])
+    pool.started("a")
+    const first = await allocate(pool, { sessionID: "a" }, deps)
+    const at = devices.findIndex((entry) => entry.udid === first.device.udid)
+    devices[at] = { ...devices[at]!, state: "Booted" }
+    await pool.idle("a")
+
+    const second = await allocate(pool, { sessionID: "b" }, deps)
+    expect(second.device.udid).toBe(first.device.udid)
+    expect(second.created).toBeUndefined()
+    expect(created).toHaveLength(1)
+    expect(pool.pick("a")).toBeUndefined()
+    expect(pool.pick("b")).toBe(first.device.udid)
+  })
+
+  test("takes an idle booted device before waking a shut down one", async () => {
+    const { pool, deps, devices } = setup([device("iPhone 17 Pro")])
+    const sleeping = device("iPhone 17 Pro 1")
+    const booted = device("iPhone 17 Pro 2", { state: "Booted" })
+    devices.push(sleeping, booted)
+    await pool.manage(sleeping)
+    await pool.manage(booted)
+    await pool.claim("a", booted.udid)
+    const result = await allocate(pool, { sessionID: "b" }, deps)
+    expect(result.device.udid).toBe(booted.udid)
+  })
+
+  test("never takes a device from a running turn, an open panel, or a hold", async () => {
+    const { pool, deps, devices, created } = setup([device("iPhone 17 Pro")])
+    for (const [name, protect] of [
+      ["running", () => pool.started("owner")],
+      ["held", () => pool.hold("owner")],
+    ] as const) {
+      const managed = device(`iPhone 17 Pro ${name}`, { state: "Booted" })
+      devices.push(managed)
+      await pool.manage(managed)
+      await pool.claim("owner", managed.udid)
+      protect()
+      const result = await allocate(pool, { sessionID: `taker-${name}` }, deps)
+      expect(result.device.udid).not.toBe(managed.udid)
+      expect(pool.pick("owner")).toBe(managed.udid)
+      await pool.releaseManual("owner")
+      await pool.releaseManual(`taker-${name}`)
+    }
+    const shown = device("iPhone 17 Pro shown", { state: "Booted" })
+    devices.push(shown)
+    await pool.manage(shown)
+    await pool.panel({ sessionID: "viewer", udid: shown.udid, state: "visible", window: "w" })
+    const result = await allocate(pool, { sessionID: "taker-panel" }, deps)
+    expect(result.device.udid).not.toBe(shown.udid)
+    expect(pool.pick("viewer")).toBe(shown.udid)
+    expect(created.length).toBeGreaterThan(0)
+  })
+
+  test("never takes an external device from an idle session", async () => {
+    const { pool, deps } = setup([device("iPhone 17 Pro", { state: "Booted" })])
+    await allocate(pool, { sessionID: "a", udid: "iPhone 17 Pro" }, deps)
+    const result = await allocate(pool, { sessionID: "b" }, deps)
+    expect(result.device.udid).not.toBe("iPhone 17 Pro")
+    expect(pool.pick("a")).toBe("iPhone 17 Pro")
   })
 
   test("a vanished claim is forgotten and replaced", async () => {
@@ -144,6 +212,7 @@ describe("allocate", () => {
       devices.push(managed)
       await pool.manage(managed)
       await pool.claim(`other-${i}`, managed.udid)
+      pool.started(`other-${i}`)
     }
     await expect(allocate(pool, { sessionID: "a" }, deps)).rejects.toThrow(
       `All ${MAX_POOL_SIZE} managed iPhone 17 Pro simulators are in use`,

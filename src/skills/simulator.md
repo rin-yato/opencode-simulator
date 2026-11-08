@@ -50,11 +50,14 @@ creates one.
 
 ## Lifetime
 
-The claim ends with your turn unless the panel is open or you passed `hold` or
-`holdMinutes`. After that, tools say no simulator is assigned. `sim_start()` gets the
-same device back if it is still free. Apps and data survive, and the device stays booted
-for about 30 minutes. The user reopening the panel gets it back too. Call `sim_release` when
-done with a hold.
+Your device stays yours after your turn ends. The user may keep testing it, so when you
+finish a task, just stop: do not call `sim_release`. Another session that needs a
+simulator takes yours over only while it is idle (no running turn, no open panel, no
+`hold`); `sim_start()` then gives you a device again. Apps and data survive, and an unused
+device shuts down after about 30 minutes and wakes when the panel reopens.
+
+`hold` or `holdMinutes` pins the device against takeover and shutdown. `sim_release` only
+ends a hold; it never closes the user's panel.
 
 Nothing is deleted automatically. Do not delete the user's own simulators unless asked.
 
@@ -81,6 +84,6 @@ one fails, call `sim_start` to open it. `sim_keyboard` also needs a focused text
 ## Failures
 
 - A rotate can succeed while the app stays portrait-only.
-- All five managed devices for a model are in use: `sim_release`, close a panel, or
-  `sim_delete` one.
+- All five managed devices for a model are busy (running turn, open panel, or hold): end a
+  hold, ask the user to close a panel, or `sim_delete` one.
 - The first device of a model pays a cold boot (minutes). Later ones reuse it.
