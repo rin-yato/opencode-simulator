@@ -4,6 +4,7 @@ import { cleanServeSimState, type HubOptions } from "../serve-sim"
 import { acquirePool } from "../shared-pool"
 import type { SimulatorPool } from "../simulator-pool"
 import type { OpenPanel } from "./context"
+import { registerDebugTools } from "./debug"
 import { registerInputTools } from "./input"
 import { registerInspectionTools } from "./inspect"
 import { registerLifecycleTools } from "./lifecycle"
@@ -128,6 +129,7 @@ const watchActivity = (ctx: Plugin.Context, pool: SimulatorPool, signal: AbortSi
  * - inspect:   status, accessibility reads, waits, screenshots
  * - input:     taps, scrolling, typing, hardware buttons, rotation
  * - settings:  UI settings, software keyboard, status bar
+ * - debug:     logs, crash reports, deep links, privacy permissions
  */
 export async function registerTools(
   ctx: Plugin.Context,
@@ -166,6 +168,7 @@ export async function registerTools(
     registerInspectionTools(editor, simulator)
     registerInputTools(editor, simulator)
     registerSettingsTools(editor, simulator)
+    registerDebugTools(editor, simulator)
   })
 
   return {
