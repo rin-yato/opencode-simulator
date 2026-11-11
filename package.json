@@ -1,6 +1,6 @@
 {
   "name": "opencode-simulator",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "description": "An OpenCode Desktop plugin that embeds a live iOS Simulator and gives agents tools to drive it.",
   "license": "MIT",
