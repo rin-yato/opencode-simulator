@@ -84,6 +84,17 @@ one fails, call `sim_start` to open it. `sim_keyboard` also needs a focused text
 - Tap a field before `sim_type`.
 - Use `sim_wait` after navigation or submit. Do not sleep.
 
+## Debugging and setup
+
+- Crash or odd behavior: `sim_crash()` first (newest crash summary, `list: true` for more,
+  filter with `bundleId`), then `sim_logs({ bundleId, since: 120, grep: "error" })`.
+  Logs are bounded: narrow with `process`, `since`, or `grep` and raise `level` to
+  `info` or `debug` only when needed.
+- Deep links and universal links: `sim_open_url({ url: "myapp://item/1" })`. Include the scheme.
+- Permissions: before a flow that would show a prompt, `sim_permissions({ action: "grant",
+  service: "photos", bundleId })`. `revoke` and `reset` may terminate the app, so relaunch
+  it. Notifications cannot be set this way; tap the system alert instead.
+
 ## Failures
 
 - A rotate can succeed while the app stays portrait-only.
